@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import {
   PROTOCOL_VERSION,
+  isTerminalChallengeStatus,
   createUncertainCommandOutcome,
   isPopupRequest,
   type AppSnapshot,
@@ -223,8 +224,8 @@ const invitationTerminalRpc: InvitationTerminalRpc = {
   },
 };
 const challengeLifecycleRpc: ChallengeLifecycleRpc = {
-  async cancelChallenge(input) {
-    const { data, error } = await client.rpc("cancel_challenge_v1", {
+  async sendChallengeLifecycleCommand(input) {
+    const { data, error } = await client.rpc(input.commandKind === "cancel_challenge" ? "cancel_challenge_v1" : "abandon_challenge_v1", {
       p_idempotency_key: input.idempotencyKey,
       p_command_version: input.commandVersion,
       p_command_kind: input.commandKind,
@@ -246,7 +247,7 @@ const challengeLifecycleRpc: ChallengeLifecycleRpc = {
     return data === null ? null : parseLifecycleChallenge(data);
   },
   async getLatestCanceledChallenge() {
-    const { data, error } = await client.rpc("get_latest_canceled_challenge_for_member_v1");
+    const { data, error } = await client.rpc("get_latest_terminal_challenge_for_member_v1");
     if (error) throw error;
     return data === null ? null : parseLifecycleChallenge(data);
   },
@@ -469,13 +470,13 @@ type CommandResult =
   | { kind: "create_invitation"; result: Awaited<ReturnType<typeof invitationCommands.createInvitation>> }
   | { kind: "accept_invitation"; result: Awaited<ReturnType<typeof acceptanceCommands.acceptInvitation>> }
   | { kind: "revoke_invitation" | "decline_invitation"; result: Awaited<ReturnType<typeof invitationTerminalCommands.revokeInvitation>> }
-  | { kind: "cancel_challenge"; result: Awaited<ReturnType<typeof challengeCommands.cancelChallenge>> }
+  | { kind: "cancel_challenge" | "abandon_challenge"; result: Awaited<ReturnType<typeof challengeCommands.cancelChallenge>> }
   | { kind: "create_solve"; result: Awaited<ReturnType<typeof solveCommands.createSolve>> }
   | { kind: "correct_solve"; result: Awaited<ReturnType<typeof solveCorrectionCommands.correctSolve>> };
 type AppliedInvitationCommand = Extract<CommandResult, { kind: "create_invitation" | "revoke_invitation" | "decline_invitation" }>;
 type AppliedInvitationResult = Extract<AppliedInvitationCommand["result"], { status: "applied" }>;
 type AppliedAcceptanceResult = Extract<Extract<CommandResult, { kind: "accept_invitation" }>['result'], { status: "applied" }>;
-type AppliedChallengeResult = Extract<Extract<CommandResult, { kind: "cancel_challenge" }>['result'], { status: "applied" }>;
+type AppliedChallengeResult = Extract<Extract<CommandResult, { kind: "cancel_challenge" | "abandon_challenge" }>['result'], { status: "applied" }>;
 type AppliedSolveResult = Extract<Extract<CommandResult, { kind: "create_solve" }>['result'], { status: "applied" }>;
 type AppliedCorrectionResult = Extract<Extract<CommandResult, { kind: "correct_solve" }>['result'], { status: "applied" }>;
 function invitationSnapshot(
@@ -542,6 +543,9 @@ async function respondToCommand(
     );
   }
   if (command.kind === "cancel_challenge" && buildAppliedSnapshot) {
+    snapshot = await buildAppliedSnapshot(command.result as AppliedChallengeResult);
+  }
+  if (command.kind === "abandon_challenge" && buildAppliedSnapshot) {
     snapshot = await buildAppliedSnapshot(command.result as AppliedChallengeResult);
   }
   if (command.kind === "create_solve" && buildAppliedSnapshot) {
@@ -645,7 +649,7 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
   if (typeof rememberedChallengeId === "string") {
     try {
       const rememberedChallenge = await challengeLifecycleRpc.getChallenge?.(rememberedChallengeId);
-      if (rememberedChallenge?.status === "canceled") {
+      if (rememberedChallenge && isTerminalChallengeStatus(rememberedChallenge.status)) {
         return buildChallengeSnapshot(rememberedChallenge);
       }
     } catch {
@@ -796,6 +800,19 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           const result = await challengeCommands.cancelChallenge(request.challengeId, identity);
           return respondToCommand(
             { kind: "cancel_challenge", result },
+            async (applied) => {
+              const challenge = (applied as AppliedChallengeResult).challenge;
+              await extensionStorage.set(LAST_CHALLENGE_ID_KEY, challenge.id);
+              return buildChallengeSnapshot(challenge);
+            },
+          );
+        });
+      }
+      case "abandon_challenge": {
+        return withAuthenticatedMember(async ({ identity }) => {
+          const result = await challengeCommands.abandonChallenge(request.challengeId, identity);
+          return respondToCommand(
+            { kind: "abandon_challenge", result },
             async (applied) => {
               const challenge = (applied as AppliedChallengeResult).challenge;
               await extensionStorage.set(LAST_CHALLENGE_ID_KEY, challenge.id);

@@ -604,8 +604,10 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
   const [selectedProblemId, setSelectedProblemId] = useState("");
   const [affirmed, setAffirmed] = useState(false);
   const [isSubmitting, setSubmitting] = useState(false);
+  const [confirmingAbandon, setConfirmingAbandon] = useState(false);
   const pending = Boolean(snapshot.pendingCommand) || commandOutcome?.status === "uncertain";
   const canCreditSolve = snapshot.actions?.includes("solve") ?? false;
+  const canAbandon = snapshot.actions?.includes("abandon") ?? false;
   const selectedProblem = PINNED_PROBLEM_SET_VERSION.problems.find((problem) => problem.id === selectedProblemId);
   const solveHistory = snapshot.challenge.solveHistory ?? [];
   const [correctionSolveId, setCorrectionSolveId] = useState<string | null>(null);
@@ -657,6 +659,14 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
       setCorrectionSolveId(null);
       setCorrectionReason("");
     }
+  }
+
+  async function abandonChallenge() {
+    if (!confirmingAbandon) {
+      setConfirmingAbandon(true);
+      return;
+    }
+    await onAction({ version: PROTOCOL_VERSION, type: "abandon_challenge", challengeId: snapshot.challenge.id });
   }
 
   return (
@@ -752,19 +762,85 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
         )}
       </section>
       <ChallengeTerms challenge={snapshot.challenge} />
+      {canAbandon && commandOutcome?.status !== "uncertain" && (
+        <section aria-labelledby="abandon-title">
+          <h3 id="abandon-title">End this shared Challenge</h3>
+          <p className="field-help">Abandoning ends the Challenge for both Members, releases both commitments, and removes the Pet. The read-only record is preserved.</p>
+          <button type="button" className="primary-button" onClick={() => void abandonChallenge()} disabled={pending}>
+            {confirmingAbandon ? "Confirm abandonment for both Members" : "Abandon Challenge"}
+          </button>
+        </section>
+      )}
       <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
       <SnapshotDetails snapshot={snapshot} />
     </section>
   );
 }
 
-function TerminalChallengeView({ snapshot, onSignOut }: { snapshot: Extract<AppSnapshot, { kind: "terminal" }>; onSignOut: () => Promise<PopupResponse | undefined> }) {
+function TerminalChallengeView({ snapshot, onSignOut, onAction, commandOutcome }: {
+  snapshot: Extract<AppSnapshot, { kind: "terminal" }>;
+  onSignOut: () => Promise<PopupResponse | undefined>;
+  onAction: (request: PopupRequest) => Promise<PopupResponse | undefined>;
+  commandOutcome?: CommandOutcome;
+}) {
+  const [restartStartDate, setRestartStartDate] = useState("");
+  const [restartDeadlineDate, setRestartDeadlineDate] = useState("");
+  const [restartSubmitting, setRestartSubmitting] = useState(false);
+  const challenge = snapshot.challenge;
+  if (!challenge) return null;
+  const partner = challenge.viewerMemberId
+    ? challenge.members.find((member) => member.memberId !== challenge.viewerMemberId)
+    : undefined;
+  const challengeTimeZone = challenge.timeZone;
+  async function restart(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!partner || !restartStartDate || !restartDeadlineDate || restartSubmitting) return;
+    setRestartSubmitting(true);
+    try {
+      await onAction({
+        version: PROTOCOL_VERSION,
+        type: "create_invitation",
+        invitedEmail: partner.email,
+        timeZone: challengeTimeZone,
+        startDate: restartStartDate,
+        deadlineDate: restartDeadlineDate,
+      });
+    } finally {
+      setRestartSubmitting(false);
+    }
+  }
+  const title = challenge.status === "completed"
+    ? "Challenge complete"
+    : challenge.status === "incomplete"
+      ? "Challenge incomplete"
+      : challenge.status === "abandoned"
+        ? "Challenge abandoned"
+        : "This Challenge was canceled";
   return (
     <section className="state-card" aria-labelledby="terminal-title">
       <p className="eyebrow">CHALLENGE ENDED</p>
-      <h2 id="terminal-title">This Challenge was canceled</h2>
-      <ChallengeTerms challenge={snapshot.challenge} />
-      <p>This Challenge is read-only and cannot be reactivated.</p>
+      <h2 id="terminal-title">{title}</h2>
+      <ChallengeTerms challenge={challenge} />
+      {challenge.status === "completed" && challenge.completionFarewellAt && (
+        <p role="status">Both Members reached 150. Your Grovekin has completed its farewell and the Pet is now gone.</p>
+      )}
+      {challenge.status === "incomplete" && <p role="status">The hard deadline passed before both Members reached 150. The Pet ended gently without penalty.</p>}
+      {challenge.status === "abandoned" && <p role="status">A Member ended the shared Challenge. The Pet ended gently and both Members are free to commit again.</p>}
+      {challenge.finalTotals && <p>Final credited totals: {challenge.finalTotals.map((total) => `${total.memberId} ${total.creditedTotal} / 150`).join(" · ")}</p>}
+      <p>This Challenge is read-only and cannot be reactivated. Restart creates a new Invitation and a new Challenge.</p>
+      {partner && <form onSubmit={restart} aria-label="Restart Challenge">
+        <h3>Restart with this partner</h3>
+        <p className="field-help">This creates a distinct Invitation with zero progress. Choose fresh dates; the prior Challenge remains closed.</p>
+        <label htmlFor="restart-start-date">New Start Date</label>
+        <input id="restart-start-date" type="date" value={restartStartDate} onChange={(event) => setRestartStartDate(event.target.value)} required disabled={restartSubmitting} />
+        <label htmlFor="restart-deadline-date">New Deadline Date</label>
+        <input id="restart-deadline-date" type="date" value={restartDeadlineDate} onChange={(event) => setRestartDeadlineDate(event.target.value)} required disabled={restartSubmitting} />
+        {commandOutcome?.status === "rejected" && commandOutcome.kind === "create_invitation" && <p className="auth-status error-status" role="alert">{commandOutcome.message}</p>}
+        {commandOutcome?.status === "uncertain" && commandOutcome.kind === "create_invitation" && <p className="auth-status" role="status">Checking whether the fresh Invitation completed. Refresh to reconcile both Members.</p>}
+        <button type="submit" className="primary-button" disabled={restartSubmitting || !restartStartDate || !restartDeadlineDate}>
+          {restartSubmitting ? "Creating fresh Invitation…" : "Restart Challenge"}
+        </button>
+      </form>}
       <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
       <SnapshotDetails snapshot={snapshot} />
     </section>
@@ -810,6 +886,7 @@ export function App() {
       || request.type === "revoke_invitation"
       || request.type === "decline_invitation"
       || request.type === "cancel_challenge"
+      || request.type === "abandon_challenge"
       || request.type === "credit_solve"
       || request.type === "correct_solve") setCommandOutcome(undefined);
     try {
@@ -847,11 +924,18 @@ export function App() {
         || request.type === "revoke_invitation"
         || request.type === "decline_invitation"
         || request.type === "cancel_challenge"
+        || request.type === "abandon_challenge"
         || request.type === "credit_solve"
         || request.type === "correct_solve") {
         setCommandOutcome(createUncertainCommandOutcome(
           "pending-recovery",
-          request.type === "correct_solve" ? "correct_solve" : request.type === "credit_solve" ? "create_solve" : undefined,
+          request.type === "correct_solve"
+            ? "correct_solve"
+            : request.type === "credit_solve"
+              ? "create_solve"
+              : request.type === "abandon_challenge"
+                ? "abandon_challenge"
+                : undefined,
         ));
         void requestSnapshot().then((snapshot) => {
           setState({ status: "loaded", snapshot });
@@ -953,7 +1037,7 @@ export function App() {
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "terminal" && (
-        <TerminalChallengeView snapshot={state.snapshot} onSignOut={signOut} />
+        <TerminalChallengeView snapshot={state.snapshot} onSignOut={signOut} onAction={sendAuthAction} commandOutcome={commandOutcome} />
       )}
 
       {state.status === "loaded"

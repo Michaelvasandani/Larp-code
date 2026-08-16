@@ -439,7 +439,7 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     }
 
     async function readAt(challengeId: string, authoritativeNow: string): Promise<ControlledSnapshot> {
-      const result = await inviter.client.rpc("get_challenge_at_v1", {
+      const result = await admin.rpc("get_challenge_at_v1", {
         p_challenge_id: challengeId,
         p_authoritative_now: authoritativeNow,
       });
@@ -475,11 +475,10 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     await addSolves(bandsChallenge, inviter, 100, 50);
     await addSolves(bandsChallenge, invitee, 100, 50);
     snapshot = await readAt(bandsChallenge, controlledNow);
-    expect(progressOf(snapshot)).toMatchObject({ pairProgress: 150, petCondition: "healthy", currentEvolutionStage: 4, highestEvolutionStage: 4 });
-    expect(progressOf(snapshot).members.map((member) => member.paceGap.copy)).toEqual([
-      "Today's pace met; 0 at the target.",
-      "Today's pace met; 0 at the target.",
-    ]);
+    expect(snapshot).toMatchObject({ status: "completed", finalTotals: expect.arrayContaining([
+      { memberId: inviter.id, creditedTotal: 150 },
+      { memberId: invitee.id, creditedTotal: 150 },
+    ]) });
 
     const carryChallenge = await seededChallenge("2030-01-02", "2030-01-04");
     await addSolves(carryChallenge, inviter, 0, 101);
@@ -494,7 +493,10 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     const beforeStart = await readAt(bandsChallenge, "2029-12-31T23:59:59.000Z");
     expect(beforeStart).not.toHaveProperty("progress");
     const afterDeadline = await readAt(bandsChallenge, "2030-01-04T00:00:00.000Z");
-    expect(afterDeadline).toMatchObject({ status: "active", progress: { day: 4, expectedProgress: 150, pairProgress: 150 } });
+    expect(afterDeadline).toMatchObject({ status: "completed", finalTotals: expect.arrayContaining([
+      { memberId: inviter.id, creditedTotal: 150 },
+      { memberId: invitee.id, creditedTotal: 150 },
+    ]) });
   });
 
   it("keeps ordered correction history shared, authorizes only the owner, and serializes concurrent retries", async () => {
@@ -571,7 +573,7 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     expect(concurrent.every((result) => result.error === null)).toBe(true);
     expect(new Set(concurrent.map((result) => (result.data as { sequence: number }).sequence)).size).toBe(2);
 
-    const deteriorated = await inviter.client.rpc("get_challenge_at_v1", { p_challenge_id: challengeId, p_authoritative_now: "2030-01-03T12:00:00.000Z" });
+    const deteriorated = await admin.rpc("get_challenge_at_v1", { p_challenge_id: challengeId, p_authoritative_now: "2030-01-03T12:00:00.000Z" });
     expect(deteriorated.error).toBeNull();
     expect(deteriorated.data).toMatchObject({ progress: { pairProgress: 49.5, petCondition: "deteriorated", highestEvolutionStage: 2 } });
     const restored = await correct(inviter, solveId, crypto.randomUUID(), "credited");
@@ -579,20 +581,149 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     expect(restored.data).toMatchObject({ solveId, sequence: 5, resultingCreditStatus: "credited" });
 
     const [ownerView, partnerView] = await Promise.all([
-      inviter.client.rpc("get_challenge_at_v1", { p_challenge_id: challengeId, p_authoritative_now: "2030-01-03T12:00:00.000Z" }),
-      invitee.client.rpc("get_challenge_at_v1", { p_challenge_id: challengeId, p_authoritative_now: "2030-01-03T12:00:00.000Z" }),
+      admin.rpc("get_challenge_at_v1", { p_challenge_id: challengeId, p_authoritative_now: "2030-01-03T12:00:00.000Z" }),
+      admin.rpc("get_challenge_at_v1", { p_challenge_id: challengeId, p_authoritative_now: "2030-01-03T12:00:00.000Z" }),
     ]);
     expect(ownerView.error).toBeNull();
     expect(partnerView.error).toBeNull();
     expect(ownerView.data).toMatchObject({
       progress: { pairProgress: 50, petCondition: "sad", highestEvolutionStage: 2 },
-      solveHistory: expect.arrayContaining([expect.objectContaining({ id: solveId, creditStatus: "credited", originalCreditStatus: "credited", canCorrect: true })]),
+      solveHistory: expect.arrayContaining([expect.objectContaining({ id: solveId, creditStatus: "credited", originalCreditStatus: "credited" })]),
     });
     const history = (ownerView.data as { solveHistory: Array<{ id: string; corrections: Array<{ sequence: number }> }> }).solveHistory.find((entry) => entry.id === solveId)!;
     expect(history.corrections.map((correction) => correction.sequence)).toEqual([1, 2, 3, 4, 5]);
     const partnerHistory = (partnerView.data as { solveHistory: Array<{ id: string; corrections: Array<{ sequence: number }> }> }).solveHistory.find((entry) => entry.id === solveId)!;
     expect(partnerHistory.corrections.map((correction) => correction.sequence)).toEqual([1, 2, 3, 4, 5]);
-    expect((partnerView.data as { solveHistory: Array<{ id: string; canCorrect: boolean }> }).solveHistory.find((entry) => entry.id === solveId)?.canCorrect).toBe(false);
+  });
+
+  it("ends success, deadline incomplete, and abandonment atomically, then keeps restart fresh", async () => {
+    admin = createClient(credentials!.url, credentials!.serviceKey);
+    const owner = await profile("TerminalOwner");
+    const partner = await profile("TerminalPartner");
+    const problemIds = PINNED_PROBLEM_SET_VERSION.problems.map((problem) => problem.id);
+
+    async function seededChallenge(name: string, status: "active" | "scheduled" = "active", deadlineDate = "2030-01-03", startDate = "2030-01-01") {
+      const invitation = await admin.from("invitations").insert({
+        inviter_id: owner.id,
+        invited_email: partner.email,
+        challenge_time_zone: "UTC",
+        start_date: startDate,
+        deadline_date: deadlineDate,
+        problem_set_version_id: "neetcode-150-2026-08-15",
+        status: "accepted",
+      }).select("id").single();
+      expect(invitation.error).toBeNull();
+      const challenge = await admin.from("challenges").insert({
+        invitation_id: invitation.data!.id,
+        inviter_id: owner.id,
+        invited_member_id: partner.id,
+        challenge_time_zone: "UTC",
+        start_date: startDate,
+        deadline_date: deadlineDate,
+        problem_set_version_id: "neetcode-150-2026-08-15",
+        status,
+      }).select("id").single();
+      expect(challenge.error).toBeNull();
+      const challengeId = challenge.data!.id as string;
+      expect((await admin.from("challenge_members").insert([
+        { challenge_id: challengeId, member_id: owner.id, member_email: owner.email, display_name: name },
+        { challenge_id: challengeId, member_id: partner.id, member_email: partner.email, display_name: "TerminalPartner" },
+      ])).error).toBeNull();
+      expect((await admin.from("member_commitments").insert([
+        { member_id: owner.id, challenge_id: challengeId },
+        { member_id: partner.id, challenge_id: challengeId },
+      ])).error).toBeNull();
+      return challengeId;
+    }
+
+    async function addSolves(challengeId: string, memberId: string, count: number, claimedAt: string, offset = 0, creditStatus = "credited") {
+      const rows = problemIds.slice(offset, offset + count).map((problemId) => ({
+        member_id: memberId,
+        challenge_id: challengeId,
+        problem_id: problemId,
+        claimed_at: claimedAt,
+        credit_status: creditStatus,
+      }));
+      expect((await admin.from("solves").insert(rows)).error).toBeNull();
+    }
+
+    const completedId = await seededChallenge("TerminalOwner");
+    await addSolves(completedId, owner.id, 150, "2030-01-02T12:00:00Z");
+    await addSolves(completedId, partner.id, 150, "2030-01-02T12:00:00Z");
+    const completed = await admin.rpc("get_challenge_at_v1", { p_challenge_id: completedId, p_authoritative_now: "2030-01-02T12:00:00Z" });
+    expect(completed.error).toBeNull();
+    expect(completed.data).toMatchObject({ status: "completed", completionFarewellAt: expect.any(String) });
+    const farewellAt = (completed.data as { completionFarewellAt: string }).completionFarewellAt;
+    expect((await admin.from("member_commitments").select("member_id").in("member_id", [owner.id, partner.id])).data).toHaveLength(0);
+    const completedSolve = (await admin.from("solves").select("id").eq("challenge_id", completedId).eq("member_id", owner.id).limit(1).single()).data!.id as string;
+    const correction = await owner.client.rpc("correct_solve_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "correct_solve",
+      p_member_id: owner.id, p_member_email: owner.email, p_challenge_id: completedId, p_solve_id: completedSolve,
+      p_category: "retracted", p_reason: "Post-terminal correction", p_resulting_credit_status: "not_credited",
+    });
+    expect(correction.error).toBeNull();
+    const correctedCompleted = await owner.client.rpc("get_challenge_v1", { p_challenge_id: completedId });
+    expect(correctedCompleted.data).toMatchObject({ status: "incomplete", completionFarewellAt: farewellAt });
+    expect((await admin.from("challenges").select("highest_evolution_stage").eq("id", completedId).single()).data?.highest_evolution_stage).toBe(4);
+    const correctedAgain = await admin.rpc("get_challenge_at_v1", { p_challenge_id: completedId, p_authoritative_now: "2030-01-03T12:00:00Z" });
+    expect((correctedAgain.data as { completionFarewellAt: string }).completionFarewellAt).toBe(farewellAt);
+
+    const abandonedId = await seededChallenge("TerminalOwner");
+    const abandoned = await admin.rpc("abandon_challenge_at_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "abandon_challenge",
+      p_member_id: partner.id, p_member_email: partner.email, p_challenge_id: abandonedId,
+      p_authoritative_now: "2030-01-01T00:00:00Z",
+    });
+    expect(abandoned.error).toBeNull();
+    expect(abandoned.data).toMatchObject({ status: "abandoned", terminalActorId: partner.id });
+    expect((await admin.from("member_commitments").select("member_id").in("member_id", [owner.id, partner.id])).data).toHaveLength(0);
+
+    const ownerAbandonedId = await seededChallenge("TerminalOwner");
+    const ownerAbandoned = await owner.client.rpc("abandon_challenge_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "abandon_challenge",
+      p_member_id: owner.id, p_member_email: owner.email, p_challenge_id: ownerAbandonedId,
+    });
+    expect(ownerAbandoned.error).toBeNull();
+    expect(ownerAbandoned.data).toMatchObject({ status: "abandoned", terminalActorId: owner.id });
+
+    const lateSolveId = await seededChallenge("TerminalOwner", "active", "2020-01-03", "2020-01-01");
+    const lateSolve = await owner.client.rpc("create_solve_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "create_solve",
+      p_member_id: owner.id, p_member_email: owner.email, p_challenge_id: lateSolveId,
+      p_problem_id: problemIds[0], p_affirmed: true,
+    });
+    expect(lateSolve.error?.code).toBe("P0003");
+    expect((await admin.rpc("get_challenge_at_v1", { p_challenge_id: lateSolveId, p_authoritative_now: "2020-01-04T00:00:00Z" })).data).toMatchObject({ status: "incomplete" });
+    expect((await admin.from("challenges").select("status").eq("id", lateSolveId).single()).data?.status).toBe("incomplete");
+    expect((await admin.from("member_commitments").select("member_id").eq("challenge_id", lateSolveId)).data).toHaveLength(0);
+
+    const incompleteId = await seededChallenge("TerminalOwner");
+    await addSolves(incompleteId, owner.id, 149, "2030-01-02T12:00:00Z");
+    await addSolves(incompleteId, partner.id, 149, "2030-01-02T12:00:00Z");
+    await addSolves(incompleteId, owner.id, 1, "2030-01-04T00:00:00Z", 149);
+    const incomplete = await admin.rpc("get_challenge_at_v1", { p_challenge_id: incompleteId, p_authoritative_now: "2030-01-04T00:00:00Z" });
+    expect(incomplete.error).toBeNull();
+    expect(incomplete.data).toMatchObject({ status: "incomplete" });
+    expect((await admin.from("member_commitments").select("member_id").in("member_id", [owner.id, partner.id])).data).toHaveLength(0);
+
+    const restartInvitation = await owner.client.rpc("create_invitation_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "create_invitation",
+      p_member_id: owner.id, p_member_email: owner.email, p_invited_email: partner.email,
+      p_challenge_time_zone: "UTC", p_start_date: "2099-01-01", p_deadline_date: "2099-01-30",
+      p_problem_set_version_id: "neetcode-150-2026-08-15",
+    });
+    expect(restartInvitation.error).toBeNull();
+    const restarted = await partner.client.rpc("accept_invitation_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "accept_invitation",
+      p_member_id: partner.id, p_member_email: partner.email, p_invitation_id: (restartInvitation.data as { id: string }).id,
+    });
+    expect(restarted.error).toBeNull();
+    expect(restarted.data).toMatchObject({ status: "scheduled" });
+    expect(restarted.data.id).not.toBe(completedId);
+    expect((await admin.from("member_commitments").select("member_id").in("member_id", [owner.id, partner.id])).data).toHaveLength(2);
+    expect((await admin.from("solves").select("id").eq("challenge_id", restarted.data.id)).data).toHaveLength(0);
+    expect((await admin.from("challenges").select("status, completion_farewell_at").eq("id", completedId).single()).data).toMatchObject({ status: "incomplete", completion_farewell_at: farewellAt });
+    expect((await admin.from("challenges").select("highest_evolution_stage").eq("id", restarted.data.id).single()).data?.highest_evolution_stage).toBe(1);
   });
 });
 

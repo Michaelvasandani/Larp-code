@@ -149,6 +149,7 @@ declare
   next_sequence integer;
   pair_progress numeric;
   attained_stage integer;
+  was_active boolean;
   clean_category text := btrim(coalesce(p_category, ''));
   clean_reason text := btrim(coalesce(p_reason, ''));
 begin
@@ -195,6 +196,7 @@ begin
   if not found then
     raise exception 'The Challenge is no longer available.' using errcode = 'P0003';
   end if;
+  was_active := challenge_row.status = 'active';
   if not exists (
     select 1 from public.challenge_members member_row
      where member_row.challenge_id = challenge_row.id
@@ -258,9 +260,11 @@ begin
     when pair_progress >= 50 then 2
     else 1
   end;
-  update public.challenges
-     set highest_evolution_stage = greatest(highest_evolution_stage, attained_stage), updated_at = authoritative_now
-   where id = challenge_row.id;
+  if was_active then
+    update public.challenges
+       set highest_evolution_stage = greatest(highest_evolution_stage, attained_stage), updated_at = authoritative_now
+     where id = challenge_row.id;
+  end if;
 
   command_result := public.solve_correction_json_v1(correction_row);
   update public.member_command_idempotency

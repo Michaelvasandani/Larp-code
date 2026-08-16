@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  ABANDON_CHALLENGE_COMMAND_KIND,
   CANCEL_CHALLENGE_COMMAND_KIND,
   createChallengeLifecycleCommandAdapter,
+  deriveTerminalChallengeOutcome,
   effectiveChallengeStatus,
   challengeActionsForStatus,
   projectChallenge,
@@ -41,14 +43,27 @@ describe("Scheduled Challenge lifecycle seam", () => {
     expect(effectiveChallengeStatus(scheduled, "2026-08-16T06:59:59.999Z")).toBe("scheduled");
     expect(effectiveChallengeStatus(scheduled, "2026-08-16T07:00:00.000Z")).toBe("active");
     expect(challengeActionsForStatus("scheduled")).toEqual(["cancel"]);
-    expect(challengeActionsForStatus("active")).toEqual(["solve"]);
+    expect(challengeActionsForStatus("active")).toEqual(["solve", "abandon"]);
     expect(challengeActionsForStatus("canceled")).toEqual([]);
   });
 
   it("removes the solve action at the inclusive deadline boundary", () => {
     const active = { ...scheduled, status: "active" as const };
-    expect(projectChallenge(active, "2026-09-14T23:59:59.999Z").actions).toEqual(["solve"]);
+    expect(projectChallenge(active, "2026-09-14T23:59:59.999Z").actions).toEqual(["solve", "abandon"]);
     expect(projectChallenge(active, "2026-09-15T07:00:00.000Z").actions).toEqual([]);
+  });
+
+  it("derives immediate success and deadline incompleteness from authoritative progress", () => {
+    const active = { ...scheduled, status: "active" as const };
+    expect(deriveTerminalChallengeOutcome(active, "2026-08-30T23:59:59.000Z", {
+      memberTotals: [150, 150],
+    })).toBe("completed");
+    expect(deriveTerminalChallengeOutcome(active, "2026-09-15T07:00:00.000Z", {
+      memberTotals: [150, 149],
+    })).toBe("incomplete");
+    expect(deriveTerminalChallengeOutcome(active, "2026-09-14T23:59:59.999Z", {
+      memberTotals: [150, 149],
+    })).toBeNull();
   });
 
   it("uses authoritative instants independently of device clock and locale", () => {
@@ -73,7 +88,7 @@ describe("Scheduled Challenge lifecycle seam", () => {
       storage,
       randomIdempotencyKey: () => "cancel-key",
       rpc: {
-        async cancelChallenge(input) {
+        async sendChallengeLifecycleCommand(input) {
           expect(input.challengeId).toBe("challenge-1");
           expect(storage.values[PENDING_COMMAND_KEY]).toMatchObject({
             kind: CANCEL_CHALLENGE_COMMAND_KIND,
@@ -96,10 +111,45 @@ describe("Scheduled Challenge lifecycle seam", () => {
     expect(await adapter.readPending()).toBeNull();
   });
 
+  it("keeps abandonment recoverable and records the whole-Challenge terminal result", async () => {
+    const storage = storageWith();
+    let attempts = 0;
+    const adapter = createChallengeLifecycleCommandAdapter({
+      storage,
+      randomIdempotencyKey: () => "abandon-key",
+      rpc: {
+        async sendChallengeLifecycleCommand(input) {
+          expect(input.challengeId).toBe("challenge-1");
+          expect(storage.values[PENDING_COMMAND_KEY]).toMatchObject({
+            kind: ABANDON_CHALLENGE_COMMAND_KIND,
+            intent: { challengeId: "challenge-1" },
+          });
+          attempts += 1;
+          if (attempts === 1) throw new Error("network timeout");
+          return {
+            ...scheduled,
+            status: "abandoned" as const,
+            terminalActorId: "member-1",
+            terminalAt: "2026-08-16T07:01:00.000Z",
+          };
+        },
+      },
+    });
+    const identity = { memberId: "member-1", memberEmail: "owner@example.test" };
+
+    await expect(adapter.abandonChallenge("challenge-1", identity)).resolves.toMatchObject({ status: "uncertain" });
+    await expect(adapter.recover(identity)).resolves.toMatchObject({
+      status: "applied",
+      idempotencyKey: "abandon-key",
+      challenge: { status: "abandoned", terminalActorId: "member-1" },
+    });
+    expect(await adapter.readPending()).toBeNull();
+  });
+
   it("returns a known Active-state boundary when cancellation is too late", async () => {
     const adapter = createChallengeLifecycleCommandAdapter({
       storage: storageWith(),
-      rpc: { async cancelChallenge() { throw { code: "P0003", message: "The Challenge is already Active and cannot be canceled." }; } },
+      rpc: { async sendChallengeLifecycleCommand() { throw { code: "P0003", message: "The Challenge is already Active and cannot be canceled." }; } },
     });
     await expect(adapter.cancelChallenge("challenge-1", { memberId: "member-1", memberEmail: "owner@example.test" })).resolves.toMatchObject({
       status: "rejected",
@@ -110,13 +160,14 @@ describe("Scheduled Challenge lifecycle seam", () => {
 
   it("accepts lifecycle popup requests and focused snapshots", () => {
     expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "cancel_challenge", challengeId: "challenge-1" })).toBe(true);
+    expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "abandon_challenge", challengeId: "challenge-1" })).toBe(true);
     const snapshot = {
       contractVersion: PROTOCOL_VERSION,
       kind: "scheduled" as const,
       authoritativeServerTime: "2026-08-16T06:59:59.999Z",
       freshness: { revision: "r1", fetchedAt: "2026-08-16T06:59:59.999Z" },
       compatibility: { minimumClientVersion: "0.1.0" },
-      backend: { status: "reachable" as const, schemaVersion: 6 },
+      backend: { status: "reachable" as const, schemaVersion: 9 },
       worker: { bootId: "boot-1", bootCount: 1, sessionRestoredFromStorage: true },
       challenge: scheduled,
       actions: ["cancel"] as const,
@@ -125,7 +176,7 @@ describe("Scheduled Challenge lifecycle seam", () => {
     expect(isPopupResponse({ ok: true, snapshot: {
       ...snapshot,
       kind: "terminal" as const,
-      challenge: { ...scheduled, status: "canceled" as const, terminalActorId: "member-1", terminalAt: "2026-08-16T06:00:00.000Z" },
+      challenge: { ...scheduled, status: "abandoned" as const, terminalActorId: "member-1", terminalAt: "2026-08-16T06:00:00.000Z" },
       actions: [] as const,
     } })).toBe(true);
   });

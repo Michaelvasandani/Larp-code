@@ -20,6 +20,7 @@ export type TransactionCommandKind =
   | "revoke_invitation"
   | "decline_invitation"
   | "cancel_challenge"
+  | "abandon_challenge"
   | "create_solve"
   | "correct_solve";
 
@@ -62,6 +63,10 @@ export type PendingCommand =
     })
   | (PendingCommandBase & {
       kind: "cancel_challenge";
+      intent: { challengeId: string };
+    })
+  | (PendingCommandBase & {
+      kind: "abandon_challenge";
       intent: { challengeId: string };
     })
   | (PendingCommandBase & {
@@ -170,8 +175,14 @@ export type Invitation = Readonly<{
 
 export type InvitationRole = "inviter" | "invitee";
 export type InvitationAction = "accept" | "decline" | "revoke";
-export type ChallengeStatus = "scheduled" | "active" | "canceled";
-export type ChallengeAction = "cancel" | "solve";
+export type ChallengeStatus = "scheduled" | "active" | "canceled" | "abandoned" | "completed" | "incomplete";
+export type ChallengeAction = "cancel" | "solve" | "abandon";
+
+export const TERMINAL_CHALLENGE_STATUSES = ["canceled", "abandoned", "completed", "incomplete"] as const;
+export type TerminalChallengeStatus = (typeof TERMINAL_CHALLENGE_STATUSES)[number];
+export function isTerminalChallengeStatus(status: ChallengeStatus): status is TerminalChallengeStatus {
+  return (TERMINAL_CHALLENGE_STATUSES as readonly string[]).includes(status);
+}
 
 export type ActivePaceStatus = "behind" | "on_pace_today" | "todays_pace_met";
 export type ActivePetCondition = "healthy" | "hungry" | "sad" | "deteriorated";
@@ -316,6 +327,12 @@ export type ChallengeSnapshot = Readonly<{
   createdAt: string;
   terminalActorId?: string | null;
   terminalAt?: string | null;
+  completionFarewellAt?: string | null;
+  viewerMemberId?: string | null;
+  finalTotals?: readonly Readonly<{
+    memberId: string;
+    creditedTotal: number;
+  }>[];
   solveHistory?: readonly SolveHistoryEntry[];
   /** Present only when the authoritative Challenge is Active. */
   progress?: ActiveChallengeProgress;
@@ -399,7 +416,7 @@ export type PopupRequest =
     }
   | {
       version: ProtocolVersion;
-      type: "cancel_challenge";
+      type: "cancel_challenge" | "abandon_challenge";
       challengeId: string;
     }
   | {
@@ -502,16 +519,22 @@ export function isInvitationDetails(value: unknown): value is InvitationDetails 
 export function isChallengeSnapshot(value: unknown): value is ChallengeSnapshot {
   if (!isRecord(value)) return false;
   const baseKeys = ["id", "invitationId", "timeZone", "startDate", "deadlineDate", "problemSetVersionId", "status", "createdAt", "members"];
-  const optionalKeys = ["terminalActorId", "terminalAt", "progress", "solveHistory"];
+  const optionalKeys = ["terminalActorId", "terminalAt", "completionFarewellAt", "viewerMemberId", "finalTotals", "progress", "solveHistory"];
   const actualKeys = Object.keys(value);
   if (!baseKeys.every((key) => actualKeys.includes(key))
     || actualKeys.some((key) => !baseKeys.includes(key) && !optionalKeys.includes(key))) return false;
   if (!isString(value.id) || !isString(value.invitationId) || !isString(value.timeZone)
     || !/^\d{4}-\d{2}-\d{2}$/.test(String(value.startDate))
     || !/^\d{4}-\d{2}-\d{2}$/.test(String(value.deadlineDate))
-    || !isString(value.problemSetVersionId) || !["scheduled", "active", "canceled"].includes(String(value.status)) || !isString(value.createdAt)
+    || !isString(value.problemSetVersionId) || !["scheduled", "active", "canceled", "abandoned", "completed", "incomplete"].includes(String(value.status)) || !isString(value.createdAt)
     || (value.terminalActorId !== undefined && value.terminalActorId !== null && !isString(value.terminalActorId))
     || (value.terminalAt !== undefined && value.terminalAt !== null && !isString(value.terminalAt))
+    || (value.completionFarewellAt !== undefined && value.completionFarewellAt !== null && !isString(value.completionFarewellAt))
+    || (value.viewerMemberId !== undefined && value.viewerMemberId !== null && !isString(value.viewerMemberId))
+    || (value.finalTotals !== undefined && (!Array.isArray(value.finalTotals) || value.finalTotals.some((total) =>
+      !isRecord(total) || !hasExactKeys(total, ["memberId", "creditedTotal"])
+      || !isString(total.memberId) || typeof total.creditedTotal !== "number"
+      || !Number.isInteger(total.creditedTotal) || total.creditedTotal < 0)))
     || !Array.isArray(value.members) || value.members.length !== 2) return false;
   return value.members.every((member) => isRecord(member)
     && hasExactKeys(member, ["memberId", "email", "displayName", "authority"])
@@ -562,7 +585,7 @@ export function parseChallengeSnapshot(value: unknown): ChallengeSnapshot {
 }
 
 function isChallengeActions(value: unknown): value is readonly ChallengeAction[] {
-  return Array.isArray(value) && value.every((action) => action === "cancel" || action === "solve");
+  return Array.isArray(value) && value.every((action) => action === "cancel" || action === "solve" || action === "abandon");
 }
 
 function isActiveProgress(value: unknown): value is ActiveChallengeProgress {
@@ -612,7 +635,7 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
     "requestedAt",
   ])) return false;
   if (value.version !== TRANSACTION_COMMAND_VERSION
-    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "create_solve", "correct_solve"].includes(String(value.kind))
+    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "abandon_challenge", "create_solve", "correct_solve"].includes(String(value.kind))
     || !isString(value.idempotencyKey) || !isString(value.memberId)
     || !isString(value.memberEmail) || !isString(value.requestedAt)) return false;
   if (!isRecord(value.intent)) return false;
@@ -627,6 +650,8 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
     && typeof value.intent.deadlineDate === "string"
     && typeof value.intent.problemSetVersionId === "string";
   if (value.kind === "cancel_challenge") return hasExactKeys(value.intent, ["challengeId"])
+    && typeof value.intent.challengeId === "string";
+  if (value.kind === "abandon_challenge") return hasExactKeys(value.intent, ["challengeId"])
     && typeof value.intent.challengeId === "string";
   if (value.kind === "create_solve") return hasExactKeys(value.intent, ["challengeId", "problemId", "affirmed"])
     && typeof value.intent.challengeId === "string"
@@ -644,7 +669,7 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
 
 export function isCommandOutcome(value: unknown): value is CommandOutcome {
   if (!isRecord(value) || typeof value.status !== "string"
-    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "create_solve", "correct_solve"].includes(String(value.kind))) return false;
+    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "abandon_challenge", "create_solve", "correct_solve"].includes(String(value.kind))) return false;
   if (value.status === "applied") {
     return hasExactKeys(value, ["status", "kind", "idempotencyKey"]) && isString(value.idempotencyKey);
   }
@@ -783,7 +808,7 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
   if (value.type === "accept_invitation" || value.type === "revoke_invitation" || value.type === "decline_invitation") {
     return hasExactKeys(value, ["version", "type", "invitationId"]) && isString(value.invitationId);
   }
-  if (value.type === "cancel_challenge") {
+  if (value.type === "cancel_challenge" || value.type === "abandon_challenge") {
     return hasExactKeys(value, ["version", "type", "challengeId"]) && isString(value.challengeId);
   }
   if (value.type === "credit_solve") {
