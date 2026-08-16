@@ -40,6 +40,11 @@ function manifestPlugin(): Plugin {
         action: {
           default_popup: "popup.html",
           default_title: "Open larp-code",
+          default_icon: {
+            "16": "icons/icon-16.png",
+            "48": "icons/icon-48.png",
+            "128": "icons/icon-128.png",
+          },
         },
         background: {
           service_worker: "service-worker.js",
@@ -82,10 +87,26 @@ function grovekinAssetsPlugin(): Plugin {
   };
 }
 
+function storeIconAssetsPlugin(): Plugin {
+  return {
+    name: "larp-code-store-icons",
+    generateBundle() {
+      const generatedRoot = resolve(process.cwd(), "art/store/generated");
+      for (const fileName of ["icon-16.png", "icon-48.png", "icon-128.png"]) {
+        this.emitFile({
+          type: "asset",
+          fileName: `icons/${fileName}`,
+          source: readFileSync(resolve(generatedRoot, fileName)),
+        });
+      }
+    },
+  };
+}
+
 export default defineConfig({
   root: resolve(process.cwd(), "src"),
   publicDir: false,
-  plugins: [react(), manifestPlugin(), grovekinAssetsPlugin()],
+  plugins: [react(), manifestPlugin(), grovekinAssetsPlugin(), storeIconAssetsPlugin()],
   define: {
     __CLIENT_VERSION__: JSON.stringify(packageMetadata.version),
     __SUPABASE_ANON_KEY__: JSON.stringify(supabaseAnonKey),

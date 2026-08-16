@@ -26,6 +26,11 @@ async function filesIn(directory) {
 const manifest = JSON.parse(await readFile(join(dist, "manifest.json"), "utf8"));
 requireCondition(manifest.manifest_version === 3, "manifest is not Manifest V3");
 requireCondition(manifest.action?.default_popup === "popup.html", "action popup is not popup.html");
+requireCondition(JSON.stringify(manifest.action?.default_icon) === JSON.stringify({
+  "16": "icons/icon-16.png",
+  "48": "icons/icon-48.png",
+  "128": "icons/icon-128.png",
+}), "static toolbar icon inventory is incomplete");
 requireCondition(manifest.background?.service_worker === "service-worker.js", "worker is not packaged at the root");
 requireCondition(manifest.background?.type === "module", "worker must be an event-driven module");
 requireCondition(JSON.stringify(manifest.permissions) === JSON.stringify(["storage"]), "permissions exceed storage");
@@ -48,6 +53,13 @@ const realtimeOrigin = `${parsedOrigin.protocol === "https:" ? "wss" : "ws"}://$
 requireCondition(csp.includes(realtimeOrigin), "CSP does not allow the exact corresponding Realtime origin");
 
 const files = await filesIn(dist);
+for (const [icon, width, height] of [["icons/icon-16.png", 16, 16], ["icons/icon-48.png", 48, 48], ["icons/icon-128.png", 128, 128]]) {
+  const iconPath = join(dist, icon);
+  requireCondition(files.includes(iconPath), `static toolbar icon is missing: ${icon}`);
+  const bytes = await readFile(iconPath);
+  requireCondition(bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])), `${icon} is not a PNG`);
+  requireCondition(bytes.readUInt32BE(16) === width && bytes.readUInt32BE(20) === height, `${icon} has unexpected dimensions`);
+}
 const grovekinManifestPath = join(dist, "assets/grovekin/manifest.json");
 requireCondition(files.includes(grovekinManifestPath), "generated Grovekin manifest is missing from the package");
 const grovekinManifest = JSON.parse(await readFile(grovekinManifestPath, "utf8"));
