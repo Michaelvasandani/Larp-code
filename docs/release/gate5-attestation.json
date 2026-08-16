@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "status": "pending",
+  "attested": false,
+  "signedBy": null,
+  "signedAt": null,
+  "checks": {
+    "publicPrivacyUrl": false,
+    "supportMonitoring": false,
+    "rights": false,
+    "visualAndDisclosureReview": false,
+    "reviewerOutcome": false
+  },
+  "note": "Human publisher must replace this pending record with a signed, dated attestation. Automation must not check these boxes."
+}

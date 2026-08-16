@@ -21,4 +21,7 @@ fabricate human review evidence.
   provider configuration, and date in the release record.
 
 Until every applicable box is checked by the responsible human, Gate 5 is
-pending even if `publication:check` passes.
+pending even if `publication:check` passes. The signed/dated replacement for
+[`gate5-attestation.json`](gate5-attestation.json) is required by
+`pnpm release:check`; the pending template must not be edited to claim human
+work that did not happen.

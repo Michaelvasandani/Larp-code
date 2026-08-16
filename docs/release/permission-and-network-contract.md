@@ -36,3 +36,8 @@ code, checks the public legal/privacy links and notices, verifies all generated
 Grovekin checksums, and fails on secret/development material. The checker is a
 release gate, not evidence that a production deployment or human disclosure
 review has occurred.
+
+`scripts/network-trace.mjs capture` records runtime HTTP(S)/WSS requests from
+the popup and service worker. The committed trace is controlled local evidence
+with `productionEvidence: false`; strict release qualification requires a
+separate production-controlled trace with the exact HTTPS/WSS origin.

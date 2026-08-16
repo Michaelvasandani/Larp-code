@@ -3,7 +3,9 @@ import { dirname, resolve } from "node:path";
 import { deflateSync } from "node:zlib";
 
 const root = resolve(new URL("../..", import.meta.url).pathname);
-const output = resolve(root, "art/store/generated");
+const outputArgument = process.argv.find((argument) => argument.startsWith("--output="))?.slice("--output=".length)
+  ?? process.env.STORE_ART_OUTPUT;
+const output = resolve(outputArgument ?? resolve(root, "art/store/generated"));
 
 function chunk(type, data) {
   const typeBytes = Buffer.from(type, "ascii");

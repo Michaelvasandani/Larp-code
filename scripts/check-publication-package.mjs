@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { basename, extname, join, relative, resolve } from "node:path";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { exactOrigin, isReservedOrigin } from "./release-contract.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -19,8 +20,12 @@ function filesIn(directory) {
   const files = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...filesIn(path));
-    else files.push(path);
+    const stat = lstatSync(path);
+    const relativePath = relative(directory, path).replaceAll("\\", "/");
+    if (stat.isSymbolicLink()) failure(`archive contains symlink after extraction: ${relativePath}`);
+    if (stat.isDirectory()) files.push(...filesIn(path));
+    else if (stat.isFile()) files.push(path);
+    else failure(`archive contains non-regular entry after extraction: ${relativePath}`);
   }
   return files;
 }
@@ -28,14 +33,6 @@ function filesIn(directory) {
 function readJson(path, label) {
   try { return JSON.parse(readFileSync(path, "utf8")); }
   catch (error) { failure(`${label} is not valid JSON: ${error.message}`); }
-}
-
-function exactOrigin(value) {
-  try {
-    const url = new URL(value);
-    if (!["https:", "http:"].includes(url.protocol) || url.pathname !== "/" || url.search || url.hash || url.username || url.password) return null;
-    return url.origin;
-  } catch { return null; }
 }
 
 function realtimeOrigin(origin) {
@@ -47,7 +44,50 @@ function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+function safeArchiveName(name) {
+  const normalized = name.replaceAll("\\", "/");
+  if (!normalized || normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)) failure(`archive contains absolute path: ${name}`);
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.includes("..")) failure(`archive contains path traversal: ${name}`);
+  return normalized;
+}
+
+function preflightArchive(archive) {
+  const stat = lstatSync(archive);
+  requireCondition(stat.isFile(), "archive input must be a regular file");
+  let names;
+  try {
+    names = execFileSync("unzip", ["-Z1", archive], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+      .split("\n").map((name) => name.trim()).filter(Boolean);
+  } catch (error) {
+    failure(`could not inspect ZIP before extraction: ${error.message}`);
+  }
+  const seen = new Set();
+  for (const name of names) {
+    const normalized = safeArchiveName(name);
+    requireCondition(!seen.has(normalized), `archive contains duplicate entry: ${name}`);
+    seen.add(normalized);
+  }
+  let verbose;
+  try {
+    verbose = execFileSync("unzip", ["-Z", "-v", archive], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    failure(`could not inspect ZIP entry attributes: ${error.message}`);
+  }
+  for (const match of verbose.matchAll(/Unix file attributes \([0-7]+ octal\):\s+([a-z-])/g)) {
+    requireCondition(match[1] === "-" || match[1] === "d", "archive contains symlink or non-regular entry");
+  }
+  return names;
+}
+
+function ensureContained(root, path, label) {
+  const resolvedRoot = resolve(root);
+  const resolvedPath = resolve(path);
+  requireCondition(resolvedPath === resolvedRoot || resolvedPath.startsWith(`${resolvedRoot}${sep}`), `${label} escapes package root`);
+}
+
 function extractArchive(archive) {
+  preflightArchive(archive);
   const directory = mkdtempSync(join(tmpdir(), "larp-code-publication-"));
   try {
     execFileSync("unzip", ["-q", "-X", archive, "-d", directory], { stdio: "pipe" });
@@ -55,6 +95,7 @@ function extractArchive(archive) {
     rmSync(directory, { recursive: true, force: true });
     failure(`could not unpack ZIP: ${error.message}`);
   }
+  ensureContained(directory, directory, "extraction root");
   return directory;
 }
 
@@ -163,6 +204,7 @@ export async function validatePublicationPackage(inputPath, options = {}) {
   const packageRoot = archive ? extractArchive(input) : input;
   try {
     const files = filesIn(packageRoot);
+    for (const file of files) ensureContained(packageRoot, file, `extracted file ${relative(packageRoot, file)}`);
     const relativeFiles = files.map((file) => relative(packageRoot, file).replaceAll("\\", "/"));
     requireCondition(relativeFiles.includes("manifest.json"), "manifest.json must be at the archive root");
     requireCondition(!relativeFiles.some(sourceOnlyFile), "source-only or development files are packaged");
@@ -184,6 +226,7 @@ export async function validatePublicationPackage(inputPath, options = {}) {
     const expectedOrigin = options.expectedOrigin ? exactOrigin(options.expectedOrigin) : backendOrigin;
     requireCondition(options.allowLocal || backendOrigin === expectedOrigin, `candidate origin ${backendOrigin} does not match expected release origin ${expectedOrigin}`);
     requireCondition(options.allowLocal || new URL(backendOrigin).protocol === "https:", "publication candidate must use HTTPS");
+    requireCondition(!options.release || !isReservedOrigin(backendOrigin), "release candidate uses a reserved, local, example, or placeholder origin");
     const csp = String(manifest.content_security_policy?.extension_pages ?? "");
     requireCondition(csp.includes("script-src 'self'") && csp.includes("object-src 'self") && !csp.includes("unsafe-eval") && !csp.includes("unsafe-inline"), "CSP permits unsafe code");
     requireCondition(csp.includes(`connect-src 'self'`) && csp.includes(backendOrigin) && csp.includes(realtimeOrigin(backendOrigin)), "CSP does not disclose exact API and Realtime origins");

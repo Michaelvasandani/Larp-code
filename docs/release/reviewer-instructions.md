@@ -48,3 +48,12 @@ They must not use a production Member account or share a real OTP. A prepared
 Scheduled/Active fixture may be created through the same authenticated backend
 with the publisher's ordinary release tooling; fixture creation is not a
 permission or reviewer credential in the extension package.
+
+For a deterministic date/state handoff, the publisher can create a local
+descriptor with `pnpm reviewer:fixture setup /tmp/larp-review-fixture.json`
+and remove it with `pnpm reviewer:fixture teardown
+/tmp/larp-review-fixture.json`. This command intentionally creates no backend
+rows, accounts, or credentials; the publisher's controlled release fixture
+provisioner must apply the dates and states using short-lived operator access,
+then delete every row after review. The descriptor is planning evidence, not a
+human reviewer outcome.

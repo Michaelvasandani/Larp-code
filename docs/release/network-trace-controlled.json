@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "capturedBy": "scripts/network-trace.mjs",
+  "capturedAt": "2026-08-16T15:03:50.354Z",
+  "environment": "local-controlled",
+  "productionEvidence": false,
+  "backendOrigin": "https://api.larp-code.example",
+  "requests": [
+    {
+      "url": "https://api.larp-code.example/rest/v1/rpc/foundation_health_v1",
+      "type": "service-worker"
+    }
+  ]
+}
