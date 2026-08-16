@@ -243,7 +243,7 @@ begin
   if current_member is null or p_member_id is distinct from current_member then
     raise exception 'Authentication is required.' using errcode = '42501';
   end if;
-  if p_command_version is distinct from 1 or p_command_kind is distinct from 'create_invitation' then
+  if p_command_version is null or p_command_version not in (0, 1) or p_command_kind is distinct from 'create_invitation' then
     raise exception 'The command version is no longer current.' using errcode = '22023';
   end if;
   select lower(email) into verified_email from auth.users
@@ -257,7 +257,7 @@ begin
   -- A replay returns the stored result before any rate-limit or domain effect.
   select result into command_result from public.member_command_idempotency
     where member_id = current_member and idempotency_key = p_idempotency_key
-      and command_kind = 'create_invitation' and command_version = 1;
+      and command_kind = 'create_invitation' and command_version = p_command_version;
   if found and command_result is not null then return command_result; end if;
 
   if clean_destination !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' or length(clean_destination) > 320 then

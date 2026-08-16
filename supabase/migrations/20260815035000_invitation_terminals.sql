@@ -196,7 +196,7 @@ begin
   if current_member is null or p_member_id is distinct from current_member then
     raise exception 'Authentication is required.' using errcode = '42501';
   end if;
-  if p_command_version is distinct from 1
+  if p_command_version is null or p_command_version not in (0, 1)
     or p_command_kind is distinct from (case when p_terminal_status = 'revoked' then 'revoke_invitation' else 'decline_invitation' end)
     or p_terminal_status not in ('revoked', 'declined') then
     raise exception 'The command version is no longer current.' using errcode = '22023';

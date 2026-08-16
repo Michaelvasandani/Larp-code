@@ -1,4 +1,13 @@
 import { isMemberAccount, type MemberAccount } from "./member-account";
+import {
+  CURRENT_COMMAND_CONTRACT_VERSION,
+  CURRENT_SNAPSHOT_CONTRACT_VERSION,
+  PREVIOUS_COMMAND_CONTRACT_VERSION,
+  PREVIOUS_SNAPSHOT_CONTRACT_VERSION,
+  isSupportedCommandContractVersion,
+  isSupportedSnapshotContractVersion,
+  type UpdateRequiredCapabilities,
+} from "./compatibility";
 
 export type { MemberAccount } from "./member-account";
 
@@ -6,13 +15,19 @@ export type { MemberAccount } from "./member-account";
  * The only popup/worker contract. Domain payloads can grow behind these
  * discriminants, but a client must never silently consume another version.
  */
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = CURRENT_SNAPSHOT_CONTRACT_VERSION;
+export const PREVIOUS_PROTOCOL_VERSION = PREVIOUS_SNAPSHOT_CONTRACT_VERSION;
+export const SUPPORTED_PROTOCOL_VERSIONS = [
+  PREVIOUS_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
+] as const;
 
-export type ProtocolVersion = typeof PROTOCOL_VERSION;
+export type ProtocolVersion = typeof PROTOCOL_VERSION | typeof PREVIOUS_PROTOCOL_VERSION;
 
 /** Domain commands have their own version so command rollout can evolve independently. */
-export const TRANSACTION_COMMAND_VERSION = 1 as const;
-export type TransactionCommandVersion = typeof TRANSACTION_COMMAND_VERSION;
+export const TRANSACTION_COMMAND_VERSION = CURRENT_COMMAND_CONTRACT_VERSION;
+export const PREVIOUS_TRANSACTION_COMMAND_VERSION = PREVIOUS_COMMAND_CONTRACT_VERSION;
+export type TransactionCommandVersion = typeof TRANSACTION_COMMAND_VERSION | typeof PREVIOUS_TRANSACTION_COMMAND_VERSION;
 export const DELETE_MEMBER_ACCOUNT_COMMAND_KIND = "delete_member_account" as const;
 export const DELETE_MEMBER_ACCOUNT_COMMAND_VERSION = TRANSACTION_COMMAND_VERSION;
 export type TransactionCommandKind =
@@ -134,6 +149,11 @@ export type CompatibilityMetadata = {
   /** Optional rollout metadata supplied by the backend. */
   clientVersion?: string;
   updateUrl?: string;
+  minimumClientReason?: "security" | "correctness";
+  snapshotContractVersion?: ProtocolVersion;
+  commandContractVersion?: TransactionCommandVersion;
+  supportedSnapshotContractVersions?: readonly ProtocolVersion[];
+  supportedCommandContractVersions?: readonly TransactionCommandVersion[];
 };
 
 export type BackendHealth = {
@@ -295,6 +315,7 @@ export type TerminalSnapshot = SnapshotMetadata & {
 export type UpdateRequiredSnapshot = Omit<SnapshotMetadata, "pendingCommand"> & {
   kind: "update_required";
   compatibility: CompatibilityMetadata & { minimumClientVersion: string };
+  capabilities?: UpdateRequiredCapabilities;
 };
 
 export type AppSnapshot =
@@ -495,6 +516,18 @@ function isString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function isUpdateRequiredCapabilities(value: unknown): value is UpdateRequiredCapabilities {
+  return isRecord(value)
+    && hasExactKeys(value, [
+      "canRequestUpdate", "canSignOut", "canEraseLocalData", "canReadMemberData", "canMutateMemberData",
+    ])
+    && value.canRequestUpdate === true
+    && value.canSignOut === true
+    && value.canEraseLocalData === true
+    && value.canReadMemberData === false
+    && value.canMutateMemberData === false;
+}
+
 function isWorkerEvidence(value: unknown): value is WorkerEvidence {
   if (!isRecord(value) || !hasExactKeys(value, ["bootId", "bootCount", "sessionRestoredFromStorage"])) return false;
   return isString(value.bootId) && typeof value.bootCount === "number" && Number.isInteger(value.bootCount)
@@ -663,7 +696,7 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
     "intent",
     "requestedAt",
   ])) return false;
-  if (value.version !== TRANSACTION_COMMAND_VERSION
+  if (!isSupportedCommandContractVersion(value.version)
     || !["delete_member_account", "update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "abandon_challenge", "create_solve", "correct_solve"].includes(String(value.kind))
     || !isString(value.idempotencyKey) || !isString(value.memberId)
     || !isString(value.memberEmail) || !isString(value.requestedAt)) return false;
@@ -727,7 +760,9 @@ function isSnapshot(value: unknown): value is AppSnapshot {
     "backend",
     "worker",
   ] as const;
+  const capabilitiesKeys = [...keys, "capabilities"] as const;
   if (!hasExactKeys(value, keys)
+    && !hasExactKeys(value, capabilitiesKeys)
     && !hasExactKeys(value, [...keys, "email"])
     && !hasExactKeys(value, [...keys, "account"])
     && !hasExactKeys(value, [...keys, "pendingCommand"])
@@ -755,19 +790,34 @@ function isSnapshot(value: unknown): value is AppSnapshot {
     && !hasExactKeys(value, [...keys, "challenge", "progress", "actions", "pendingCommand"])
     && !hasExactKeys(value, [...keys, "actions"])
     && !hasExactKeys(value, [...keys, "actions", "pendingCommand"])) return false;
-  if (value.contractVersion !== PROTOCOL_VERSION || !isString(value.authoritativeServerTime) || !isWorkerEvidence(value.worker)) {
+  if (!isSupportedSnapshotContractVersion(value.contractVersion)
+    || !isString(value.authoritativeServerTime) || !isWorkerEvidence(value.worker)) {
     return false;
   }
   if (!isRecord(value.freshness) || !hasExactKeys(value.freshness, ["revision", "fetchedAt"])
     || !isString(value.freshness.revision) || !isString(value.freshness.fetchedAt)) return false;
   if (!isRecord(value.compatibility)
-    || (!hasExactKeys(value.compatibility, ["minimumClientVersion"])
-      && !hasExactKeys(value.compatibility, ["minimumClientVersion", "clientVersion"])
-      && !hasExactKeys(value.compatibility, ["minimumClientVersion", "updateUrl"])
-      && !hasExactKeys(value.compatibility, ["minimumClientVersion", "clientVersion", "updateUrl"]))
     || !isString(value.compatibility.minimumClientVersion)
+    || Object.keys(value.compatibility).some((key) => ![
+      "minimumClientVersion", "clientVersion", "updateUrl", "minimumClientReason",
+      "snapshotContractVersion", "commandContractVersion", "supportedSnapshotContractVersions",
+      "supportedCommandContractVersions",
+    ].includes(key))
     || (value.compatibility.clientVersion !== undefined && !isString(value.compatibility.clientVersion))
-    || (value.compatibility.updateUrl !== undefined && !isString(value.compatibility.updateUrl))) return false;
+    || (value.compatibility.updateUrl !== undefined && !isString(value.compatibility.updateUrl))
+    || (value.compatibility.minimumClientReason !== undefined
+      && value.compatibility.minimumClientReason !== "security"
+      && value.compatibility.minimumClientReason !== "correctness")
+    || (value.compatibility.snapshotContractVersion !== undefined
+      && !isSupportedSnapshotContractVersion(value.compatibility.snapshotContractVersion))
+    || (value.compatibility.commandContractVersion !== undefined
+      && !isSupportedCommandContractVersion(value.compatibility.commandContractVersion))
+    || (value.compatibility.supportedSnapshotContractVersions !== undefined
+      && (!Array.isArray(value.compatibility.supportedSnapshotContractVersions)
+        || value.compatibility.supportedSnapshotContractVersions.some((version) => !isSupportedSnapshotContractVersion(version))))
+    || (value.compatibility.supportedCommandContractVersions !== undefined
+      && (!Array.isArray(value.compatibility.supportedCommandContractVersions)
+        || value.compatibility.supportedCommandContractVersions.some((version) => !isSupportedCommandContractVersion(version))))) return false;
   if (!isRecord(value.backend) || !hasExactKeys(value.backend, ["status", "schemaVersion"])
     || value.backend.status !== "reachable" || typeof value.backend.schemaVersion !== "number") return false;
   if ("pendingCommand" in value && value.pendingCommand !== null && !isPendingCommand(value.pendingCommand)) return false;
@@ -816,16 +866,18 @@ function isSnapshot(value: unknown): value is AppSnapshot {
       && (!('actions' in value) || isChallengeActions(value.actions));
   }
   if (value.kind === "update_required") {
-    return hasOptionalPending(keys)
+    const shape = hasOptionalPending(keys) || hasExactKeys(value, capabilitiesKeys);
+    return shape
       && !('pendingCommand' in value)
-      && isString(value.compatibility.minimumClientVersion);
+      && isString(value.compatibility.minimumClientVersion)
+      && (!('capabilities' in value) || isUpdateRequiredCapabilities(value.capabilities));
   }
   return ["signed_out", "invitation", "scheduled", "active", "terminal"].includes(String(value.kind))
     && hasOptionalPending(keys);
 }
 
 export function isPopupRequest(value: unknown): value is PopupRequest {
-  if (!isRecord(value) || value.version !== PROTOCOL_VERSION || typeof value.type !== "string") return false;
+  if (!isRecord(value) || !isSupportedSnapshotContractVersion(value.version) || typeof value.type !== "string") return false;
   if (value.type === "get_snapshot" || value.type === "sign_out"
     || value.type === "request_update" || value.type === "erase_local_data") {
     return hasExactKeys(value, ["version", "type"]);

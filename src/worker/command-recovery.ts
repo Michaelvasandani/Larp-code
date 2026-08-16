@@ -5,6 +5,7 @@ import {
   type MemberAccount,
   type PendingCommand,
   type TransactionCommandKind,
+  type TransactionCommandVersion,
   type UncertainCommandOutcome,
 } from "../shared/protocol";
 import { normalizeDisplayName } from "./member-account";
@@ -50,7 +51,7 @@ export function classifyRecoverableCommandFailure(error: unknown): RecoverableCo
 export type DisplayNameCommandRpc = {
   updateDisplayName: (input: {
     idempotencyKey: string;
-    commandVersion: typeof TRANSACTION_COMMAND_VERSION;
+    commandVersion: TransactionCommandVersion;
     commandKind: TransactionCommandKind;
     memberId: string;
     memberEmail: string;

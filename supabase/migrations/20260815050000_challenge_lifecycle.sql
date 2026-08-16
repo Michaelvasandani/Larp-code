@@ -140,7 +140,7 @@ begin
   if current_member is null or p_member_id is distinct from current_member then
     raise exception 'Authentication is required.' using errcode = '42501';
   end if;
-  if p_command_version is distinct from 1 or p_command_kind is distinct from 'cancel_challenge' then
+  if p_command_version is null or p_command_version not in (0, 1) or p_command_kind is distinct from 'cancel_challenge' then
     raise exception 'The command version is no longer current.' using errcode = '22023';
   end if;
   select lower(email) into verified_email

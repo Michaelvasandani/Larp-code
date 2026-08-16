@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   PROTOCOL_VERSION,
+  PREVIOUS_PROTOCOL_VERSION,
   isPopupRequest,
   isPopupResponse,
   type AppSnapshot,
@@ -44,6 +45,15 @@ describe("versioned popup/worker protocol", () => {
   it("rejects requests from another contract version", () => {
     expect(isPopupRequest({ version: PROTOCOL_VERSION + 1, type: "get_snapshot" })).toBe(false);
     expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "unknown" })).toBe(false);
+  });
+
+  it("accepts the immediately preceding request and Snapshot contract during rollout", () => {
+    expect(PREVIOUS_PROTOCOL_VERSION).toBe(0);
+    expect(isPopupRequest({ version: PREVIOUS_PROTOCOL_VERSION, type: "get_snapshot" })).toBe(true);
+    expect(isPopupResponse({
+      ok: true,
+      snapshot: { ...signedOutSnapshot, contractVersion: PREVIOUS_PROTOCOL_VERSION },
+    })).toBe(true);
   });
 
   it("accepts a successful complete snapshot response", () => {
@@ -299,6 +309,13 @@ describe("versioned popup/worker protocol", () => {
         minimumClientVersion: "2.0.0",
         clientVersion: "0.1.0",
         updateUrl: "https://chromewebstore.google.com/detail/larp-code",
+      },
+      capabilities: {
+        canRequestUpdate: true,
+        canSignOut: true,
+        canEraseLocalData: true,
+        canReadMemberData: false,
+        canMutateMemberData: false,
       },
     };
     expect(isPopupResponse({ ok: true, snapshot: updateRequired })).toBe(true);

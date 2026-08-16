@@ -2,6 +2,8 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import {
   PROTOCOL_VERSION,
+  SUPPORTED_PROTOCOL_VERSIONS,
+  TRANSACTION_COMMAND_VERSION,
   isTerminalChallengeStatus,
   createUncertainCommandOutcome,
   type CommandOutcome,
@@ -14,6 +16,8 @@ import {
   type ProtocolError,
   type WorkerEvidence,
   type WorkerEvent,
+  type ProtocolVersion,
+  type TransactionCommandVersion,
 } from "../shared/protocol";
 import { PINNED_PROBLEM_SET_VERSION } from "../catalog/problem-set";
 import {
@@ -60,7 +64,14 @@ import {
   type SolveCorrectionRpc,
 } from "./solve";
 import { createDebouncedSnapshotInvalidation } from "./realtime";
-import { requiresClientUpdate } from "../shared/compatibility";
+import {
+  requiresClientUpdate,
+  updateRequiredCapabilities,
+  SUPPORTED_COMMAND_CONTRACT_VERSIONS,
+  SUPPORTED_SNAPSHOT_CONTRACT_VERSIONS,
+  isSupportedCommandContractVersion,
+  isSupportedSnapshotContractVersion,
+} from "../shared/compatibility";
 import {
   createAccountDeletionAdapter,
   parseDeletionReceipt,
@@ -80,6 +91,11 @@ type FoundationHealth = {
   serverTime: string;
   minimumClientVersion?: string;
   updateUrl?: string;
+  minimumClientReason?: "security" | "correctness";
+  snapshotContractVersion?: ProtocolVersion;
+  commandContractVersion?: TransactionCommandVersion;
+  supportedSnapshotContractVersions?: ProtocolVersion[];
+  supportedCommandContractVersions?: TransactionCommandVersion[];
 };
 
 function createPrefixedStorage(prefix: string) {
@@ -377,7 +393,7 @@ const workerEvidencePromise = initializeWorkerEvidence();
 const popupPorts = new Set<chrome.runtime.Port>();
 let realtimeChannel: ReturnType<typeof client.channel> | null = null;
 
-function broadcastWorkerEvent(event: Extract<WorkerEvent, { version: typeof PROTOCOL_VERSION }>): void {
+function broadcastWorkerEvent(event: WorkerEvent): void {
   for (const port of popupPorts) {
     try { port.postMessage(event); } catch { /* Popup closed between invalidation and delivery. */ }
   }
@@ -434,7 +450,14 @@ function isFoundationHealth(value: unknown): value is FoundationHealth {
     && typeof health.serverTime === "string"
     && !Number.isNaN(Date.parse(health.serverTime))
     && (health.minimumClientVersion === undefined || typeof health.minimumClientVersion === "string")
-    && (health.updateUrl === undefined || typeof health.updateUrl === "string");
+    && (health.updateUrl === undefined || typeof health.updateUrl === "string")
+    && (health.minimumClientReason === undefined || health.minimumClientReason === "security" || health.minimumClientReason === "correctness")
+    && (health.snapshotContractVersion === undefined || isSupportedSnapshotContractVersion(health.snapshotContractVersion))
+    && (health.commandContractVersion === undefined || isSupportedCommandContractVersion(health.commandContractVersion))
+    && (health.supportedSnapshotContractVersions === undefined || (Array.isArray(health.supportedSnapshotContractVersions)
+      && health.supportedSnapshotContractVersions.every((version) => isSupportedSnapshotContractVersion(version))))
+    && (health.supportedCommandContractVersions === undefined || (Array.isArray(health.supportedCommandContractVersions)
+      && health.supportedCommandContractVersions.every((version) => isSupportedCommandContractVersion(version))));
 }
 
 async function readFoundationHealth(): Promise<FoundationHealth> {
@@ -473,6 +496,11 @@ function snapshotMetadata(health: FoundationHealth, worker: WorkerEvidence, pend
       minimumClientVersion: health.minimumClientVersion ?? __CLIENT_VERSION__,
       ...(health.minimumClientVersion ? { clientVersion: __CLIENT_VERSION__ } : {}),
       ...(health.updateUrl ? { updateUrl: health.updateUrl } : {}),
+      ...(health.minimumClientReason ? { minimumClientReason: health.minimumClientReason } : {}),
+      snapshotContractVersion: health.snapshotContractVersion ?? PROTOCOL_VERSION,
+      commandContractVersion: health.commandContractVersion ?? TRANSACTION_COMMAND_VERSION,
+      supportedSnapshotContractVersions: health.supportedSnapshotContractVersions ?? [...SUPPORTED_SNAPSHOT_CONTRACT_VERSIONS],
+      supportedCommandContractVersions: health.supportedCommandContractVersions ?? [...SUPPORTED_COMMAND_CONTRACT_VERSIONS],
     },
     backend: { status: "reachable" as const, schemaVersion: health.schemaVersion },
     worker,
@@ -486,6 +514,7 @@ function updateRequiredSnapshot(health: FoundationHealth, worker: WorkerEvidence
   return {
     ...metadata,
     kind: "update_required",
+    capabilities: updateRequiredCapabilities(),
   };
 }
 
@@ -1007,7 +1036,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
 });
 
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== `larp-code-popup-v${PROTOCOL_VERSION}`) return;
+  if (!SUPPORTED_PROTOCOL_VERSIONS.some((version) => port.name === `larp-code-popup-v${version}`)) return;
   popupPorts.add(port);
   startRealtime();
   port.onDisconnect.addListener(() => {

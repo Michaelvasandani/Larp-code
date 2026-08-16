@@ -196,7 +196,7 @@ begin
   if current_member is null or p_member_id is distinct from current_member then
     raise exception 'Authentication is required.' using errcode = '42501';
   end if;
-  if p_command_version is distinct from 1 or p_command_kind is distinct from 'abandon_challenge' then
+  if p_command_version is null or p_command_version not in (0, 1) or p_command_kind is distinct from 'abandon_challenge' then
     raise exception 'The command version is no longer current.' using errcode = '22023';
   end if;
   select lower(email) into verified_email from auth.users
@@ -271,7 +271,7 @@ begin
     raise exception 'This controlled-time seam is restricted to the service role.' using errcode = '42501';
   end if;
   current_member := p_member_id;
-  if p_command_version is distinct from 1 or p_command_kind is distinct from 'abandon_challenge' then
+  if p_command_version is null or p_command_version not in (0, 1) or p_command_kind is distinct from 'abandon_challenge' then
     raise exception 'The command version is no longer current.' using errcode = '22023';
   end if;
   select lower(email) into verified_email from auth.users
@@ -505,7 +505,7 @@ begin
   if current_member is null or p_member_id is distinct from current_member then
     raise exception 'Authentication is required.' using errcode = '42501';
   end if;
-  if p_command_version is distinct from 1 or p_command_kind is distinct from 'create_solve' then
+  if p_command_version is null or p_command_version not in (0, 1) or p_command_kind is distinct from 'create_solve' then
     raise exception 'The command version is no longer current.' using errcode = '22023';
   end if;
   if p_affirmed is distinct from true then
