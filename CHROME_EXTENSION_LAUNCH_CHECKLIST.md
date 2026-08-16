@@ -20,19 +20,19 @@
 
 ## Production Supabase
 
-- [ ] Create a production Supabase project.
+- [x] Create a production Supabase project.
 - [ ] Use a paid, non-pausable configuration.
 - [ ] Enable MFA on the Supabase owner account.
-- [ ] Deploy all database migrations.
-- [ ] Import the reviewed 150-problem catalog.
-- [ ] Deploy Edge Functions.
+- [x] Deploy all database migrations.
+- [x] Import the reviewed 150-problem catalog.
+- [x] Deploy Edge Functions.
 - [ ] Configure scheduled lifecycle and retention jobs.
-- [ ] Verify RLS and least-privilege grants.
+- [x] Verify RLS and least-privilege grants.
 - [ ] Enable SSL enforcement.
 - [ ] Configure production Auth and OTP limits.
 - [ ] Configure backups and, if required, PITR.
-- [ ] Verify the extension only receives the publishable/anon key.
-- [ ] Confirm no `service_role` key or database credential enters the package.
+- [x] Verify the extension only receives the publishable/anon key.
+- [x] Confirm no `service_role` key or database credential enters the package.
 
 Reference: [Supabase production checklist](https://supabase.com/docs/guides/deployment/going-into-prod)
 
