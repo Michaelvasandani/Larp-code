@@ -4,9 +4,12 @@ const run = (script) => execFileSync("pnpm", [script], { stdio: "inherit" });
 
 run("backend:start");
 try {
-  // Run against the freshly started isolated database before the parallel
-  // integration tests create their fixture rows. The report is the durable
-  // Gate 4 evidence; ordinary tests must not race the singleton write gate.
+  // The local Supabase project is a disposable verification sandbox. Reset it
+  // so repeated verification runs cannot inherit fixture rows or a stale
+  // singleton recovery state; this never targets a managed production DB.
+  run("backend:reset");
+  // Run before integration tests create fixture rows. The report is local
+  // simulation evidence, not provider confirmation for Gate 4.
   run("recovery:rehearse");
   run("check");
   run("smoke");

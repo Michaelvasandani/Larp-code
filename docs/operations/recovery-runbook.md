@@ -23,7 +23,11 @@ the setting; the database table records the required envelope):
 
 The local rehearsal uses the repository's local managed-Postgres-shaped
 Supabase environment and Mailpit-compatible transport. It does not connect to
-production and does not copy production rows.
+production and does not copy production rows. Its `providerEvidence` is an
+explicit `local-supabase-simulation` artifact with `productionReady: false`;
+it is not production Gate 4 confirmation. Production Gate 4 requires a dated
+provider dashboard/export artifact proving the managed PITR and retention
+settings above (with provider credentials kept out of the artifact).
 
 ## Suspected destructive incident (`OPS-024`)
 
@@ -36,7 +40,10 @@ production and does not copy production rows.
 3. Select the latest managed restore point strictly before the fault and no
    older than seven days with `select_latest_safe_recovery_point_v1`. Never
    choose a point after the suspected fault. Preserve the original database
-   until the isolated restore has passed validation.
+   until the isolated restore has passed validation. In the local rehearsal,
+   `pg_dump` creates a frozen snapshot and `pg_restore` loads it into a fresh
+   disposable database before validation; the restored schema is inspected
+   independently of the source.
 4. Start restore with `begin_recovery_restore_v1`. Packaged clients receive
    `recoveryPhase: "restoring"` in safe foundation metadata and render the
    ordinary **Current state is unavailable** surface. They do not queue a new
@@ -63,6 +70,7 @@ validation must pass every check before reopening:
 | Scheduled jobs | Reconciliation and retention functions remain installed. |
 | Retention cutoffs | Retention ledger/function and all required cutoffs remain present. |
 | Mail integration | A safe test message is accepted by the configured transport. |
+| Provider evidence | Explicit provider artifact is present; local simulation is marked `productionReady: false` and cannot pass as production confirmation. |
 
 The operator then retries any client-held command with its original
 idempotency key and confirms the stored result is returned exactly once. The
@@ -92,7 +100,10 @@ language.
 ## Local rehearsal command
 
 With local Supabase running, execute `pnpm recovery:rehearse`. It freezes the
-isolated database, starts a restore phase, validates all checks, records a
-dated report without Member Data or secrets, reopens the write gate, and
-asserts the health phase is open. The command exits non-zero on any failed
-check and leaves no production state behind.
+isolated database, exercises response-loss/idempotency retries, performs a
+fresh local dump/restore, sends and fetches a safe Mailpit probe, validates all
+checks, records a dated report without Member Data or secrets, reopens the
+write gate, and asserts the health phase is open. A failure invokes the
+local-only abort seam (which cannot reopen a real incident), deletes the probe
+identity, and drops the disposable restore database. The command exits
+non-zero on any failed check and leaves no production state behind.

@@ -21,6 +21,7 @@ export const REQUIRED_RECOVERY_CHECKS = [
   "scheduledJobs",
   "retentionCutoffs",
   "mailIntegration",
+  "providerEvidence",
 ] as const;
 
 export type RecoveryCheck = (typeof REQUIRED_RECOVERY_CHECKS)[number];
@@ -29,6 +30,113 @@ export type RecoveryValidation = {
   readyToReopen: boolean;
   failedChecks: RecoveryCheck[];
 };
+
+const RECOVERY_REPORT_KEYS = [
+  "scenario",
+  "selectedRestorePoint",
+  "measured",
+  "failures",
+  "correctiveActions",
+  "memberDataIncluded",
+  "absoluteZeroDataLossGuarantee",
+  "providerEvidence",
+  "mailIntegration",
+] as const;
+const RECOVERY_MEASURED_KEYS = [
+  "freezeMilliseconds",
+  "restoreMilliseconds",
+  "retryOutcome",
+  "ordinaryInterruption",
+  "catastrophicRestore",
+] as const;
+const PROHIBITED_REPORT_STRING = /(?:email|otp|token|password|secret|credential|member\s*data|challenge\s*data|snapshot|solve|pet|progress|display\s*name|@)/i;
+
+export type RecoveryReportPayload = {
+  scenario: "destructive-incident" | "ordinary-interruption";
+  selectedRestorePoint: string;
+  measured: {
+    freezeMilliseconds: number;
+    restoreMilliseconds: number;
+    retryOutcome: string;
+    ordinaryInterruption: string;
+    catastrophicRestore: string;
+  };
+  failures: string[];
+  correctiveActions: string[];
+  memberDataIncluded: false;
+  absoluteZeroDataLossGuarantee: false;
+  providerEvidence: {
+    provider: "managed-postgres" | "local-supabase-simulation";
+    pitrEnabled: true;
+    pitrWindowDays: 7;
+    backupRetentionDays: number;
+    evidenceRef: string;
+    verifiedAt: string;
+    productionReady: boolean;
+  };
+  mailIntegration: {
+    provider: "resend" | "mailpit";
+    messageRef: string;
+    accepted: true;
+  };
+};
+
+function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  return actual.length === expected.length && actual.every((key, index) => key === [...expected].sort()[index]);
+}
+
+function containsProhibitedString(value: unknown): boolean {
+  if (typeof value === "string") return PROHIBITED_REPORT_STRING.test(value);
+  if (Array.isArray(value)) return value.some(containsProhibitedString);
+  if (typeof value !== "object" || value === null) return false;
+  return Object.entries(value).some(([key, nested]) => {
+    const allowlistedKey = RECOVERY_REPORT_KEYS.includes(key as (typeof RECOVERY_REPORT_KEYS)[number])
+      || RECOVERY_MEASURED_KEYS.includes(key as (typeof RECOVERY_MEASURED_KEYS)[number]);
+    return (!allowlistedKey && PROHIBITED_REPORT_STRING.test(key)) || containsProhibitedString(nested);
+  });
+}
+
+export function isSafeRecoveryReportPayload(value: unknown): value is RecoveryReportPayload {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const report = value as Record<string, unknown>;
+  if (!exactKeys(report, RECOVERY_REPORT_KEYS) || containsProhibitedString(report)) return false;
+  if ((report.scenario !== "destructive-incident" && report.scenario !== "ordinary-interruption")
+    || typeof report.selectedRestorePoint !== "string"
+    || Number.isNaN(Date.parse(report.selectedRestorePoint))
+    || report.memberDataIncluded !== false
+    || report.absoluteZeroDataLossGuarantee !== false
+    || !Array.isArray(report.failures) || !report.failures.every((item) => typeof item === "string")
+    || !Array.isArray(report.correctiveActions) || !report.correctiveActions.every((item) => typeof item === "string")) return false;
+  if (typeof report.measured !== "object" || report.measured === null || Array.isArray(report.measured)) return false;
+  const measured = report.measured as Record<string, unknown>;
+  if (typeof report.providerEvidence !== "object" || report.providerEvidence === null || Array.isArray(report.providerEvidence)
+    || typeof report.mailIntegration !== "object" || report.mailIntegration === null || Array.isArray(report.mailIntegration)) return false;
+  const providerEvidence = report.providerEvidence as Record<string, unknown>;
+  const mailIntegration = report.mailIntegration as Record<string, unknown>;
+  return exactKeys(measured, RECOVERY_MEASURED_KEYS)
+    && Number.isInteger(measured.freezeMilliseconds) && (measured.freezeMilliseconds as number) >= 0
+    && Number.isInteger(measured.restoreMilliseconds) && (measured.restoreMilliseconds as number) >= 0
+    && Object.entries(measured).filter(([key]) => !["freezeMilliseconds", "restoreMilliseconds"].includes(key))
+      .every(([, item]) => typeof item === "string")
+    && exactKeys(providerEvidence, ["provider", "pitrEnabled", "pitrWindowDays", "backupRetentionDays", "evidenceRef", "verifiedAt", "productionReady"])
+    && (providerEvidence.provider === "managed-postgres" || providerEvidence.provider === "local-supabase-simulation")
+    && providerEvidence.pitrEnabled === true
+    && providerEvidence.pitrWindowDays === 7
+    && typeof providerEvidence.backupRetentionDays === "number"
+    && Number.isInteger(providerEvidence.backupRetentionDays)
+    && providerEvidence.backupRetentionDays >= 7
+    && providerEvidence.backupRetentionDays <= 30
+    && typeof providerEvidence.evidenceRef === "string"
+    && typeof providerEvidence.verifiedAt === "string"
+    && !Number.isNaN(Date.parse(providerEvidence.verifiedAt))
+    && typeof providerEvidence.productionReady === "boolean"
+    && providerEvidence.productionReady === (providerEvidence.provider === "managed-postgres")
+    && exactKeys(mailIntegration, ["provider", "messageRef", "accepted"])
+    && (mailIntegration.provider === "resend" || mailIntegration.provider === "mailpit")
+    && mailIntegration.accepted === true
+    && typeof mailIntegration.messageRef === "string";
+}
 
 export const DURABILITY_BEHAVIOR = Object.freeze({
   ordinaryInterruption: "Ordinary popup, worker, or network interruption recovers exactly once by retrying the same idempotency key.",

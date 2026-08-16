@@ -9,7 +9,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run --no-file-parallelism",
     "acceptance:invitation": "node scripts/invitation-lifecycle-acceptance.mjs",
     "test:watch": "vitest",
     "backend:start": "supabase start",

@@ -4,6 +4,7 @@ import {
   DURABILITY_BEHAVIOR,
   REQUIRED_RECOVERY_CHECKS,
   createRecoveryReport,
+  isSafeRecoveryReportPayload,
   selectLatestSafeRecoveryPoint,
   validateRecoveryEvidence,
 } from "../src/shared/recovery";
@@ -53,5 +54,45 @@ describe("managed recovery contract", () => {
     expect(report.memberDataIncluded).toBe(false);
     expect(JSON.stringify(report)).not.toMatch(/email|token|snapshot|solve|pet|secret/i);
     expect(report.durability).toEqual(DURABILITY_BEHAVIOR);
+  });
+
+  it("accepts only the closed, privacy-safe evidence shape", () => {
+    const payload = {
+      scenario: "destructive-incident",
+      selectedRestorePoint: "2026-08-16T11:59:59.000Z",
+      measured: {
+        freezeMilliseconds: 14,
+        restoreMilliseconds: 21,
+        retryOutcome: "replayed_by_same_key",
+        ordinaryInterruption: "same_key_replayed_exactly_once",
+        catastrophicRestore: "acknowledged_transactions_after_selected_point_may_be_lost",
+      },
+      failures: [],
+      correctiveActions: ["Repeat the exercise after provider changes."],
+      memberDataIncluded: false,
+      absoluteZeroDataLossGuarantee: false,
+      providerEvidence: {
+        provider: "local-supabase-simulation",
+        pitrEnabled: true,
+        pitrWindowDays: 7,
+        backupRetentionDays: 30,
+        evidenceRef: "local-recovery-simulation-v1",
+        verifiedAt: "2026-08-16T12:00:00.000Z",
+        productionReady: false,
+      },
+      mailIntegration: { provider: "mailpit", messageRef: "message-1", accepted: true },
+    } as const;
+    expect(isSafeRecoveryReportPayload(payload)).toBe(true);
+    expect(isSafeRecoveryReportPayload({ ...payload, extra: "not allowed" })).toBe(false);
+    expect(isSafeRecoveryReportPayload({ ...payload, correctiveActions: ["Contact member@example.test"] })).toBe(false);
+    expect(isSafeRecoveryReportPayload({ ...payload, measured: { ...payload.measured, nested: { token: "secret" } } })).toBe(false);
+    expect(isSafeRecoveryReportPayload({
+      ...payload,
+      providerEvidence: { ...payload.providerEvidence, provider: "managed-postgres", productionReady: false },
+    })).toBe(false);
+    expect(isSafeRecoveryReportPayload({
+      ...payload,
+      mailIntegration: { ...payload.mailIntegration, provider: "untrusted-mailer" },
+    })).toBe(false);
   });
 });

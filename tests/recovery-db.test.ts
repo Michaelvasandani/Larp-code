@@ -39,8 +39,13 @@ const credentials = localCredentials();
 const recoveryDb = describe.skipIf(!credentials || process.env.RUN_RECOVERY_DB !== "1")("managed recovery database seam", () => {
   let admin: SupabaseClient;
   let memberId: string | undefined;
+  let incidentRef: string | undefined;
+  let recoveryStarted = false;
 
   afterAll(async () => {
+    if (admin && incidentRef && recoveryStarted) {
+      await admin.rpc("abort_recovery_rehearsal_v1", { p_incident_ref: incidentRef });
+    }
     if (memberId) await admin.auth.admin.deleteUser(memberId);
   });
 
@@ -54,6 +59,25 @@ const recoveryDb = describe.skipIf(!credentials || process.env.RUN_RECOVERY_DB !
     const memberClient = createClient(credentials!.url, credentials!.anonKey);
     const signedIn = await memberClient.auth.signInWithPassword({ email, password: "pass-12345" });
     expect(signedIn.error).toBeNull();
+    expect(signedIn.data.session).not.toBeNull();
+    const account = await memberClient.rpc("create_member_account_v1", {
+      p_display_name: "Recovery DB test",
+      p_adult_confirmed: true,
+      p_consent_accepted: true,
+      p_consent_version: "PRIV-031-v1",
+    });
+    expect(account.error).toBeNull();
+    const retryKey = crypto.randomUUID();
+    const retryInput = {
+      p_idempotency_key: retryKey,
+      p_command_version: 1,
+      p_command_kind: "update_display_name",
+      p_member_id: memberId,
+      p_member_email: email,
+      p_display_name: "Recovery DB test committed",
+    };
+    const firstRetry = await memberClient.rpc("update_member_display_name_v1", retryInput);
+    expect(firstRetry.error).toBeNull();
 
     const faultAt = new Date().toISOString();
     const candidates = [
@@ -68,24 +92,20 @@ const recoveryDb = describe.skipIf(!credentials || process.env.RUN_RECOVERY_DB !
     expect(selected.error).toBeNull();
     expect(Date.parse(selected.data)).toBe(Date.parse(candidates[1]!));
 
-    const incidentRef = `ticket39-${crypto.randomUUID().slice(0, 8)}`;
+    incidentRef = `local-rehearsal-${crypto.randomUUID().slice(0, 8)}`;
     const freeze = await admin.rpc("begin_recovery_freeze_v1", {
       p_incident_ref: incidentRef,
       p_fault_at: faultAt,
       p_selected_restore_point: selected.data,
     });
     expect(freeze.error).toBeNull();
+    recoveryStarted = true;
     expect(freeze.data).toMatchObject({ phase: "frozen", writesBlocked: true });
     const frozenHealth = await publicClient.rpc("foundation_health_v1");
     expect(frozenHealth.error).toBeNull();
     expect(frozenHealth.data).toMatchObject({ recoveryPhase: "frozen" });
 
-    const blockedMutation = await memberClient.rpc("create_member_account_v1", {
-      p_display_name: "Blocked during recovery",
-      p_adult_confirmed: true,
-      p_consent_accepted: true,
-      p_consent_version: "PRIV-031-v1",
-    });
+    const blockedMutation = await memberClient.rpc("update_member_display_name_v1", { ...retryInput, p_idempotency_key: crypto.randomUUID() });
     expect(blockedMutation.error).not.toBeNull();
     expect(blockedMutation.error?.code).toBe("57P01");
 
@@ -94,7 +114,19 @@ const recoveryDb = describe.skipIf(!credentials || process.env.RUN_RECOVERY_DB !
     const restoringHealth = await publicClient.rpc("foundation_health_v1");
     expect(restoringHealth.error).toBeNull();
     expect(restoringHealth.data).toMatchObject({ recoveryPhase: "restoring" });
-    const validation = await admin.rpc("validate_recovery_v1", { p_evidence: { mailIntegration: true } });
+    const providerEvidence = {
+      provider: "local-supabase-simulation",
+      pitrEnabled: true,
+      pitrWindowDays: 7,
+      backupRetentionDays: 30,
+      evidenceRef: "focused-db-test-local-evidence",
+      verifiedAt: new Date().toISOString(),
+      productionReady: false,
+    };
+    const mailIntegration = { provider: "mailpit", messageRef: "focused-db-test-mailpit-probe", accepted: true };
+    const validation = await admin.rpc("validate_recovery_v1", {
+      p_evidence: { authSessionVerified: true, providerEvidence, mailIntegration },
+    });
     expect(validation.error).toBeNull();
     expect(validation.data).toMatchObject({ readyToReopen: true, failedChecks: [] });
     expect(Object.values(validation.data.checks)).toEqual(expect.arrayContaining([true]));
@@ -104,6 +136,8 @@ const recoveryDb = describe.skipIf(!credentials || process.env.RUN_RECOVERY_DB !
       p_report: {
         scenario: "destructive-incident",
         selectedRestorePoint: selected.data,
+        providerEvidence,
+        mailIntegration,
         measured: {
           freezeMilliseconds: 10,
           restoreMilliseconds: 20,
@@ -118,14 +152,15 @@ const recoveryDb = describe.skipIf(!credentials || process.env.RUN_RECOVERY_DB !
       },
     });
     expect(report.error).toBeNull();
+    recoveryStarted = false;
     expect(report.data).toMatchObject({ phase: "open", writesBlocked: false });
     const reopenedHealth = await publicClient.rpc("foundation_health_v1");
     expect(reopenedHealth.error).toBeNull();
     expect(reopenedHealth.data).toMatchObject({ recoveryPhase: "open", schemaVersion: 14 });
 
     const reportRow = await admin.from("recovery_reports")
-      .select("scenario,selected_restore_point,validation_checks,member_data_included,absolute_zero_data_loss_guarantee,measured,failures,corrective_actions")
-      .eq("incident_ref", incidentRef)
+      .select("scenario,selected_restore_point,validation_checks,provider_evidence,mail_integration,member_data_included,absolute_zero_data_loss_guarantee,measured,failures,corrective_actions")
+      .eq("incident_ref", incidentRef!)
       .single();
     expect(reportRow.error).toBeNull();
     expect(reportRow.data).toMatchObject({
@@ -133,8 +168,11 @@ const recoveryDb = describe.skipIf(!credentials || process.env.RUN_RECOVERY_DB !
       member_data_included: false,
       absolute_zero_data_loss_guarantee: false,
     });
-    expect(Object.keys(reportRow.data?.validation_checks ?? {})).toHaveLength(12);
+    expect(Object.keys(reportRow.data?.validation_checks ?? {})).toHaveLength(13);
     expect(JSON.stringify(reportRow.data)).not.toMatch(/email|token|secret|password|otp/i);
+    const replay = await memberClient.rpc("update_member_display_name_v1", retryInput);
+    expect(replay.error).toBeNull();
+    expect(replay.data).toEqual(firstRetry.data);
   });
 });
 

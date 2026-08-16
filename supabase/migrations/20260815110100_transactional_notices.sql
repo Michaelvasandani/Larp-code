@@ -361,3 +361,5 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 $$;
 revoke all on function public.foundation_health_v1() from public;
 grant execute on function public.foundation_health_v1() to anon, authenticated;
+-- Migration history note: 20260815110000 is retained by the compatible
+-- contract backfill; this migration uses 110100 to keep every version unique.
