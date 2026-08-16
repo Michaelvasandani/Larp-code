@@ -11,18 +11,18 @@
 
 ## Product identity
 
-- [ ] Choose the final product name.
+- [x] Choose the final product name: `larp-code`.
 - [x] Configure a public HTTPS production site; a Vercel `*.vercel.app` URL is acceptable and a custom web domain is optional (`https://larp-code.vercel.app`).
 - [x] Publish a public support page (`https://larp-code.vercel.app/support`).
-- [ ] Confirm the GitHub issue support route is monitored.
+- [x] Confirm the GitHub issue support route is monitored (`Michaelvasandani/Larp-code`).
 - [x] Publish the privacy policy at a public HTTPS URL (`https://larp-code.vercel.app/privacy`).
-- [ ] Confirm the NeetCode/LeetCode non-affiliation and license wording.
-- [ ] Review and accept the documented catalog and brand risks.
+- [x] Confirm the NeetCode/LeetCode non-affiliation and MIT license wording.
+- [x] Review and accept the documented catalog and brand risks.
 
 ## Production Supabase
 
 - [x] Create a production Supabase project.
-- [ ] Use a paid, non-pausable configuration.
+- [x] Set the hosting-plan policy: Supabase Free is acceptable for the private beta; upgrade to a paid, non-pausable plan before public launch unless the pause and backup risks are explicitly re-accepted at that gate.
 - [ ] Enable MFA on the Supabase owner account.
 - [x] Deploy all database migrations.
 - [x] Import the reviewed 150-problem catalog.
