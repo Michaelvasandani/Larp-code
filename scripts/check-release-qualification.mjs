@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { validatePublicationPackage } from "./check-publication-package.mjs";
 import { validateNetworkTrace } from "./network-trace.mjs";
 import { validatePublishableKey } from "./publishable-key.mjs";
+import { auditQualificationRecord, qualificationRecordPath, readQualificationRecord } from "./release-qualification.mjs";
 import { releaseOrigin } from "./release-contract.mjs";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
@@ -14,6 +15,17 @@ const archiveShaPath = join(output, "candidate.sha256");
 const attestationPath = join(root, "docs/release/gate5-attestation.json");
 const blockers = [];
 const add = (condition, message) => { if (!condition) blockers.push(message); };
+
+try {
+  const qualificationPath = process.env.RELEASE_QUALIFICATION_RECORD
+    ? resolve(process.env.RELEASE_QUALIFICATION_RECORD)
+    : qualificationRecordPath(root);
+  const record = readQualificationRecord(qualificationPath);
+  const audit = auditQualificationRecord(record, { root });
+  for (const blocker of audit.blockers) blockers.push(`qualification record: ${blocker}`);
+} catch (error) {
+  blockers.push(error.message);
+}
 
 let metadata;
 try { metadata = JSON.parse(readFileSync(metadataPath, "utf8")); } catch { blockers.push("candidate-build.json is missing or invalid"); }

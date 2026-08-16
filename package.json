@@ -20,6 +20,7 @@
     "publication:check": "node scripts/check-publication-package.mjs",
     "publication:assemble": "node scripts/assemble-publication-package.mjs",
     "release:check": "node scripts/check-release-qualification.mjs",
+    "release:qualify": "node scripts/release-qualification.mjs",
     "reviewer:fixture": "node scripts/reviewer-fixture.mjs",
     "network:trace": "node scripts/network-trace.mjs",
     "recovery:rehearse": "node scripts/rehearse-recovery.mjs",

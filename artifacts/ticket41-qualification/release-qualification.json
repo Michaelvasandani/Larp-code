@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "recordId": "larp-code-release-qualification-2026-08-16",
+  "recordedAt": "2026-08-16T16:00:00.000Z",
+  "status": "blocked",
+  "releaseEligible": false,
+  "submissionPerformed": false,
+  "submissionStatus": "not-performed",
+  "candidate": {
+    "packageVersion": "0.1.0",
+    "extensionVersion": "0.1.0",
+    "sourceCommit": "4b2a4c486b3a76246a55747d14fe8ab9d8dd9440",
+    "archivePath": "artifacts/ticket40-publication/larp-code-0.1.0.zip",
+    "archiveSha256": "c03fef90c1e46c8218629b78429f847c2d2aaa79329263218cc7272acfd84184",
+    "candidateBuildPath": "artifacts/ticket40-publication/candidate-build.json",
+    "networkTracePath": "artifacts/ticket40-publication/network-trace.json",
+    "networkTraceSha256": "f1816b0e1960184c52fcf18a700d65e2ba04d0349d41f589d4903c20fb76a2b7",
+    "backendOrigin": "https://api.larp-code.example",
+    "environment": "local-controlled",
+    "productionEvidence": false
+  },
+  "compatibility": {
+    "snapshotContracts": [1, 2],
+    "commandContracts": [1, 2],
+    "minimumClientVersion": "0.1.0",
+    "catalogVersion": "neetcode-150-2026-08-15",
+    "catalogSourceRepository": "https://github.com/neetcode-gh/leetcode",
+    "catalogSourceCommit": "5f9dbb6030c8243c933b799f7999092183d258d1",
+    "catalogSha256": "d956fa476ee08da764b5d8c8c09cef33247b8f6d1b02aff99af5228f7d148e5e",
+    "backfillVersion": "ticket-37-contract-v1",
+    "art": {
+      "generatorRevision": "grovekin-stills-v1+source-ce2d31749af5b225517ca9b196e1fa5725435497e0786dd833ff88cc8c610e33+generator-1226757e8372848e8c53c764322d093fccdbb04158630ae169c203e09b69cc16",
+      "manifestSha256": "ab52b09ef7e82aed60f5861400c31bb03f814a6995c1069328f50e911ca46668",
+      "checksumsSha256": "d02d90e2a40bad1070fdff120c606c631755699e354a77a25943624a8cf86ef8",
+      "animationChecksumsSha256": "919cebc1703ec87ff9c6b3fbb859c6a07fe20d82efda93970387e4bc1b457d3d"
+    }
+  },
+  "evidence": {
+    "infrastructure": {
+      "status": "blocked",
+      "environment": "not-provided",
+      "productionEvidence": false,
+      "evidenceRefs": ["docs/operations/recovery-runbook.md"],
+      "checks": {
+        "paidNonPausableProject": false,
+        "leastPrivilegeAndRls": false,
+        "exactClientOrigins": false,
+        "scheduledWork": false,
+        "currentPreviousContracts": false,
+        "managedRecovery": false,
+        "serviceCredentialNotExposed": true
+      }
+    },
+    "mail": {
+      "status": "blocked",
+      "environment": "not-provided",
+      "productionEvidence": false,
+      "evidenceRefs": ["docs/release/publication-dossier.md"],
+      "checks": {
+        "verifiedAuthenticationSubdomain": false,
+        "spf": false,
+        "dkim": false,
+        "dmarc": false,
+        "trackingDisabled": false,
+        "supabaseIntegration": false,
+        "retentionCompatible": false,
+        "majorInboxOtpDelivery": false,
+        "transactionalNoticeDelivery": false
+      }
+    },
+    "monitoring": {
+      "status": "blocked",
+      "environment": "not-provided",
+      "productionEvidence": false,
+      "evidenceRefs": ["docs/release/data-inventory.md"],
+      "checks": {
+        "availability": false,
+        "migration": false,
+        "scheduledJobs": false,
+        "retention": false,
+        "mail": false,
+        "security": false,
+        "prohibitedMemberDataExcluded": true
+      }
+    },
+    "recovery": {
+      "status": "blocked",
+      "environment": "local-controlled",
+      "productionEvidence": false,
+      "evidenceRefs": ["docs/operations/recovery-runbook.md"],
+      "checks": {
+        "pitrAndBackupSettings": false,
+        "restoreRehearsal": false,
+        "rollbackProcedure": false,
+        "fixForwardProcedure": false,
+        "reviewerInstructions": true,
+        "privacySafeEvidence": true
+      }
+    },
+    "endToEnd": {
+      "status": "blocked",
+      "environment": "not-provided",
+      "productionEvidence": false,
+      "evidenceRefs": ["docs/release/reviewer-instructions.md"],
+      "checks": {
+        "signIn": false,
+        "setup": false,
+        "invitation": false,
+        "acceptance": false,
+        "scheduled": false,
+        "active": false,
+        "solve": false,
+        "correction": false,
+        "paceAndPet": false,
+        "interruptionRecovery": false,
+        "terminalOutcome": false,
+        "transactionalNotices": false,
+        "signOut": false,
+        "deletion": false
+      }
+    }
+  },
+  "primarySourceRechecks": [
+    {
+      "authority": "chrome",
+      "url": "https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3",
+      "sourceType": "primary",
+      "checkedAt": "2026-08-16T15:32:32.000Z",
+      "constraint": "Manifest V3 executable logic must be packaged; remote code is not accepted.",
+      "result": "confirmed"
+    },
+    {
+      "authority": "chrome",
+      "url": "https://developer.chrome.com/docs/webstore/program-policies/mv3-requirements",
+      "sourceType": "primary",
+      "checkedAt": "2026-08-16T15:32:32.000Z",
+      "constraint": "The full extension behavior must be determinable during review and remote execution is constrained.",
+      "result": "confirmed"
+    },
+    {
+      "authority": "chrome",
+      "url": "https://developer.chrome.com/docs/webstore/cws-dashboard-privacy",
+      "sourceType": "primary",
+      "checkedAt": "2026-08-16T15:32:32.000Z",
+      "constraint": "Store privacy disclosures and permission justifications must match the privacy policy and package.",
+      "result": "confirmed"
+    },
+    {
+      "authority": "neetcode",
+      "url": "https://github.com/neetcode-gh/leetcode",
+      "sourceType": "primary",
+      "checkedAt": "2026-08-16T15:32:32.000Z",
+      "constraint": "Catalog source, pinned revision, license notice, and imported fields must remain the reviewed source contract.",
+      "result": "confirmed"
+    },
+    {
+      "authority": "leetcode",
+      "url": "https://leetcode.com/",
+      "sourceType": "primary",
+      "checkedAt": "2026-08-16T15:32:32.000Z",
+      "constraint": "Problem destinations and platform references must remain ordinary member-opened links with no page access or automation.",
+      "result": "confirmed"
+    },
+    {
+      "authority": "supabase",
+      "url": "https://supabase.com/docs/guides/deployment/going-into-prod",
+      "sourceType": "primary",
+      "checkedAt": "2026-08-16T15:32:32.000Z",
+      "constraint": "Production project configuration and operational readiness must follow the current provider checklist.",
+      "result": "confirmed"
+    },
+    {
+      "authority": "supabase",
+      "url": "https://supabase.com/docs/guides/platform/backups",
+      "sourceType": "primary",
+      "checkedAt": "2026-08-16T15:32:32.000Z",
+      "constraint": "Managed backups and point-in-time recovery settings must be verified from the provider dashboard.",
+      "result": "confirmed"
+    },
+    {
+      "authority": "supabase",
+      "url": "https://supabase.com/docs/guides/auth/auth-smtp",
+      "sourceType": "primary",
+      "checkedAt": "2026-08-16T15:32:32.000Z",
+      "constraint": "Production Auth mail requires configured custom SMTP rather than the limited default service.",
+      "result": "confirmed"
+    },
+    {
+      "authority": "resend",
+      "url": "https://resend.com/docs/dashboard/domains/introduction",
+      "sourceType": "primary",
+      "checkedAt": "2026-08-16T15:32:32.000Z",
+      "constraint": "The authentication sending subdomain must be owned and verified with SPF and DKIM; DMARC is recorded as a trust control.",
+      "result": "confirmed"
+    },
+    {
+      "authority": "resend",
+      "url": "https://resend.com/docs/knowledge-base/how-do-i-maximize-deliverability-for-supabase-auth-emails",
+      "sourceType": "primary",
+      "checkedAt": "2026-08-16T15:32:32.000Z",
+      "constraint": "Authentication mail deliverability, tracking, and retention settings must be checked without recording provider secrets.",
+      "result": "confirmed"
+    }
+  ],
+  "gates": [
+    { "id": 0, "name": "Specification integrity", "status": "passed", "codeComplete": true, "evidenceRefs": ["docs/release/publication-dossier.md"] },
+    { "id": 1, "name": "Foundation contract", "status": "passed", "codeComplete": true, "evidenceRefs": ["artifacts/ticket40-publication/candidate-build.json"] },
+    { "id": 2, "name": "Domain correctness", "status": "passed", "codeComplete": true, "evidenceRefs": ["docs/release/publication-dossier.md"] },
+    { "id": 3, "name": "End-to-end experience", "status": "passed", "codeComplete": true, "evidenceRefs": ["artifacts/ticket31-accessibility/README.md", "artifacts/ticket36-grovekin/README.md"] },
+    { "id": 4, "name": "Resilience and data governance", "status": "passed", "codeComplete": true, "evidenceRefs": ["docs/operations/recovery-runbook.md"] },
+    { "id": 5, "name": "Assets and publication", "status": "blocked", "codeComplete": true, "evidenceRefs": ["docs/release/human-review-checklist.md", "docs/release/gate5-attestation.json"] },
+    { "id": 6, "name": "Release candidate", "status": "blocked", "codeComplete": false, "evidenceRefs": ["docs/release/publication-dossier.md"] }
+  ],
+  "publisherControls": {
+    "developerAccount": { "status": "pending", "confirmedAt": null, "evidenceRef": null },
+    "verifiedContactEmail": { "status": "pending", "confirmedAt": null, "evidenceRef": null },
+    "twoStepVerification": { "status": "pending", "confirmedAt": null, "evidenceRef": null },
+    "privacyUrl": { "status": "pending", "confirmedAt": null, "evidenceRef": null },
+    "supportRoute": { "status": "pending", "confirmedAt": null, "evidenceRef": null }
+  },
+  "ownerResidualRisk": {
+    "status": "pending",
+    "accepted": false,
+    "acceptedBy": null,
+    "acceptedAt": null,
+    "scope": "Bounded catalog compilation-rights, trademark, terms-of-service, copyright, brand, and Store-enforcement risk for this exact candidate; any objection blocks release.",
+    "legalAdvice": false,
+    "rightsHolderAuthorizationClaimed": false
+  },
+  "externalBlockers": [
+    "Paid, non-pausable production Supabase project settings and production origin are not provided or attested.",
+    "Least-privilege grants/RLS, scheduled work, current/previous contracts, and managed recovery settings require production dashboard evidence.",
+    "Resend authentication subdomain, SPF, DKIM, DMARC, tracking, Supabase integration, retention, and major-inbox delivery are not provided or attested.",
+    "Production monitoring and privacy-filtered diagnostic routing evidence is not provided.",
+    "Production or equivalently controlled two-account end-to-end results are not provided; local/reviewer instructions are not production E2E evidence.",
+    "Backup/PITR, restore rehearsal, rollback/fix-forward, publisher verified email, and 2-Step Verification controls are not confirmed.",
+    "Gate 5 human visual/disclosure/reviewer attestation is pending and cannot be automated.",
+    "Owner has not accepted the bounded residual catalog/brand risk for this exact candidate."
+  ],
+  "notes": [
+    "This record intentionally distinguishes local code-complete evidence from external production blockers.",
+    "No Supabase or Resend credentials, publisher settings, human approval, legal conclusion, or production E2E result is inferred or recorded.",
+    "Qualification does not submit to the Chrome Web Store; submission remains a separate human-controlled action after every gate passes."
+  ]
+}
