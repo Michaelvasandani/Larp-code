@@ -6,6 +6,7 @@ import {
   isPopupRequest,
   type AppSnapshot,
   type ChallengeSnapshot,
+  type PendingCommand,
   type PopupRequest,
   type PopupResponse,
   type ProtocolError,
@@ -29,8 +30,12 @@ import {
 } from "./command-recovery";
 import {
   createInvitationCommandAdapter,
+  createInvitationTerminalCommandAdapter,
   parseInvitation,
   type CreateInvitationRpc,
+  type InvitationTerminalRpc,
+  type InvitationTerminalRpcInput,
+  type InvitationRecord,
 } from "./invitation";
 import {
   createAcceptInvitationCommandAdapter,
@@ -40,6 +45,7 @@ import {
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
+const LAST_INVITATION_ID_KEY = "invitation.lastId";
 
 type FoundationHealth = {
   service: "larp-code";
@@ -169,6 +175,41 @@ const invitationCommandRpc: CreateInvitationRpc = {
     return data === null ? null : parseChallenge(data);
   },
 };
+
+async function callInvitationTerminalRpc(
+  functionName: "revoke_invitation_v1" | "decline_invitation_v1",
+  input: InvitationTerminalRpcInput,
+): Promise<ReturnType<typeof parseInvitation>> {
+  const { data, error } = await client.rpc(functionName, {
+    p_idempotency_key: input.idempotencyKey,
+    p_command_version: input.commandVersion,
+    p_command_kind: input.commandKind,
+    p_member_id: input.memberId,
+    p_member_email: input.memberEmail,
+    p_invitation_id: input.invitationId,
+  });
+  if (error) throw error;
+  return parseInvitation(data);
+}
+
+const invitationTerminalRpc: InvitationTerminalRpc = {
+  async revokeInvitation(input) {
+    return callInvitationTerminalRpc("revoke_invitation_v1", input);
+  },
+  async declineInvitation(input) {
+    return callInvitationTerminalRpc("decline_invitation_v1", input);
+  },
+  async getInvitation(invitationId) {
+    const { data, error } = await client.rpc("get_invitation_v1", { p_invitation_id: invitationId });
+    if (error) throw error;
+    return data === null ? null : parseInvitation(data);
+  },
+  async getPendingOutgoingInvitation() {
+    const { data, error } = await client.rpc("get_pending_outgoing_invitation_v1");
+    if (error) throw error;
+    return data === null ? null : parseInvitation(data);
+  },
+};
 const displayNameCommands = createDisplayNameCommandAdapter({
   rpc: displayNameCommandRpc,
   storage: memberStorage,
@@ -193,6 +234,10 @@ const acceptanceCommands = createAcceptInvitationCommandAdapter({
       return parseChallenge(data);
     },
   },
+});
+const invitationTerminalCommands = createInvitationTerminalCommandAdapter({
+  rpc: invitationTerminalRpc,
+  storage: memberStorage,
 });
 const bootId = crypto.randomUUID();
 const initialSessionStatePromise = authSessionAdapter.restoreSession();
@@ -285,9 +330,32 @@ async function withAuthenticatedMember<T>(operation: (member: AuthenticatedMembe
 type CommandResult =
   | { kind: "update_display_name"; result: Awaited<ReturnType<typeof displayNameCommands.updateDisplayName>> }
   | { kind: "create_invitation"; result: Awaited<ReturnType<typeof invitationCommands.createInvitation>> }
-  | { kind: "accept_invitation"; result: Awaited<ReturnType<typeof acceptanceCommands.acceptInvitation>> };
-type AppliedInvitationResult = Extract<Extract<CommandResult, { kind: "create_invitation" }>['result'], { status: "applied" }>;
+  | { kind: "accept_invitation"; result: Awaited<ReturnType<typeof acceptanceCommands.acceptInvitation>> }
+  | { kind: "revoke_invitation" | "decline_invitation"; result: Awaited<ReturnType<typeof invitationTerminalCommands.revokeInvitation>> };
+type AppliedInvitationCommand = Extract<CommandResult, { kind: "create_invitation" | "revoke_invitation" | "decline_invitation" }>;
+type AppliedInvitationResult = Extract<AppliedInvitationCommand["result"], { status: "applied" }>;
 type AppliedAcceptanceResult = Extract<Extract<CommandResult, { kind: "accept_invitation" }>['result'], { status: "applied" }>;
+function invitationSnapshot(
+  health: FoundationHealth,
+  worker: WorkerEvidence,
+  invitation: InvitationRecord,
+  role: "inviter" | "invitee",
+  pendingCommand: PendingCommand | null = null,
+): AppSnapshot {
+  return {
+    ...snapshotMetadata(health, worker, pendingCommand),
+    kind: "invitation",
+    invitation,
+    role,
+    actions: invitation.status === "pending"
+      ? role === "inviter" ? ["revoke"] : ["accept", "decline"]
+      : [],
+  };
+}
+
+async function rememberInvitation(invitationId: string): Promise<void> {
+  await extensionStorage.set(LAST_INVITATION_ID_KEY, invitationId);
+}
 
 async function respondToCommand(
   command: CommandResult,
@@ -325,6 +393,11 @@ async function respondToCommand(
   if (command.kind === "accept_invitation" && buildAppliedSnapshot) {
     snapshot = await buildAppliedSnapshot(command.result as AppliedAcceptanceResult);
   }
+  if ((command.kind === "revoke_invitation" || command.kind === "decline_invitation") && buildAppliedSnapshot) {
+    snapshot = await buildAppliedSnapshot(
+      command.result as AppliedInvitationResult,
+    );
+  }
   return {
     ok: true,
     snapshot,
@@ -355,6 +428,7 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     await displayNameCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
     await invitationCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
     await acceptanceCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
+    await invitationTerminalCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
   }
   const account = await memberAccount.getMemberAccount();
   if (!account) {
@@ -363,20 +437,56 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     if (!email) throw new Error("The authenticated session has no verified email.");
     return { ...snapshotMetadata(health, worker, null), kind: "setup_required", email };
   }
+  const pendingCommand = await displayNameCommands.readPending()
+    ?? await invitationCommands.readPending()
+    ?? await acceptanceCommands.readPending()
+    ?? await invitationTerminalCommands.readPending();
   const incomingDetails = await invitationCommandRpc.getPendingInvitationDetails?.();
   if (incomingDetails) {
     const { invitation, ...details } = incomingDetails;
-    return { ...snapshotMetadata(health, worker, null), kind: "invitation", invitation, details };
+    await rememberInvitation(invitation.id);
+    return {
+      ...snapshotMetadata(health, worker, pendingCommand),
+      kind: "invitation",
+      invitation,
+      details,
+      role: "invitee",
+      actions: invitation.status === "pending" ? ["accept", "decline"] : [],
+    };
   }
   const incomingInvitation = await invitationCommandRpc.getPendingInvitation?.();
   if (incomingInvitation) {
-    return { ...snapshotMetadata(health, worker, null), kind: "invitation", invitation: incomingInvitation };
+    await rememberInvitation(incomingInvitation.id);
+    return invitationSnapshot(health, worker, incomingInvitation, "invitee", pendingCommand);
+  }
+  const outgoingInvitation = await invitationTerminalRpc.getPendingOutgoingInvitation?.();
+  if (outgoingInvitation) {
+    await rememberInvitation(outgoingInvitation.id);
+    return invitationSnapshot(health, worker, outgoingInvitation, "inviter", pendingCommand);
+  }
+  const rememberedInvitationId = await extensionStorage.get(LAST_INVITATION_ID_KEY);
+  if (typeof rememberedInvitationId === "string") {
+    try {
+      const rememberedInvitation = await invitationTerminalRpc.getInvitation?.(rememberedInvitationId);
+      if (rememberedInvitation && ["revoked", "declined", "expired"].includes(rememberedInvitation.status)) {
+        return invitationSnapshot(
+          health,
+          worker,
+          rememberedInvitation,
+          rememberedInvitation.inviterId === identity.memberId ? "inviter" : "invitee",
+          pendingCommand,
+        );
+      }
+    } catch {
+      // A changed browser identity or a removed Invitation must not leak or
+      // block the current Member's account Snapshot.
+    }
+    await extensionStorage.remove(LAST_INVITATION_ID_KEY);
   }
   const committedChallenge = await invitationCommandRpc.getCommittedChallenge?.();
   if (committedChallenge) {
-    return { ...snapshotMetadata(health, worker, null), kind: "scheduled", challenge: committedChallenge };
+    return { ...snapshotMetadata(health, worker, pendingCommand), kind: "scheduled", challenge: committedChallenge };
   }
-  const pendingCommand = await displayNameCommands.readPending();
   const metadata = snapshotMetadata(health, worker, pendingCommand);
   return { ...metadata, kind: "account", account };
 }
@@ -448,7 +558,31 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
               const health = await readFoundationHealth();
               const worker = await workerEvidencePromise;
               const invitation = (applied as AppliedInvitationResult).invitation;
-              return { ...snapshotMetadata(health, worker, null), kind: "invitation", invitation };
+              await rememberInvitation(invitation.id);
+              return invitationSnapshot(health, worker, invitation, "inviter");
+            },
+          );
+        });
+      }
+      case "revoke_invitation":
+      case "decline_invitation": {
+        return withAuthenticatedMember(async ({ identity }) => {
+          const result = request.type === "revoke_invitation"
+            ? await invitationTerminalCommands.revokeInvitation(request.invitationId, identity)
+            : await invitationTerminalCommands.declineInvitation(request.invitationId, identity);
+          return respondToCommand(
+            { kind: request.type as "revoke_invitation" | "decline_invitation", result },
+            async (applied) => {
+              const health = await readFoundationHealth();
+              const worker = await workerEvidencePromise;
+              const invitation = (applied as AppliedInvitationResult).invitation;
+              await rememberInvitation(invitation.id);
+              return invitationSnapshot(
+                health,
+                worker,
+                invitation,
+                request.type === "revoke_invitation" ? "inviter" : "invitee",
+              );
             },
           );
         });

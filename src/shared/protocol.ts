@@ -13,7 +13,12 @@ export type ProtocolVersion = typeof PROTOCOL_VERSION;
 /** Domain commands have their own version so command rollout can evolve independently. */
 export const TRANSACTION_COMMAND_VERSION = 1 as const;
 export type TransactionCommandVersion = typeof TRANSACTION_COMMAND_VERSION;
-export type TransactionCommandKind = "update_display_name" | "create_invitation" | "accept_invitation";
+export type TransactionCommandKind =
+  | "update_display_name"
+  | "create_invitation"
+  | "accept_invitation"
+  | "revoke_invitation"
+  | "decline_invitation";
 
 type PendingCommandBase = {
   version: TransactionCommandVersion;
@@ -31,6 +36,10 @@ export type InvitationCommandIntent = Readonly<{
   problemSetVersionId: string;
 }>;
 
+export type InvitationTerminalCommandIntent = Readonly<{
+  invitationId: string;
+}>;
+
 export type PendingCommand =
   | (PendingCommandBase & {
       kind: "update_display_name";
@@ -42,7 +51,11 @@ export type PendingCommand =
     })
   | (PendingCommandBase & {
       kind: "accept_invitation";
-      intent: { invitationId: string };
+      intent: InvitationTerminalCommandIntent;
+    })
+  | (PendingCommandBase & {
+      kind: "revoke_invitation" | "decline_invitation";
+      intent: InvitationTerminalCommandIntent;
     });
 
 export type CommandOutcome =
@@ -136,12 +149,19 @@ export type Invitation = Readonly<{
   problemSetVersionId: string;
   status: "pending" | "accepted" | "revoked" | "declined" | "expired";
   createdAt: string;
+  terminalActorId?: string | null;
+  terminalAt?: string | null;
 }>;
+
+export type InvitationRole = "inviter" | "invitee";
+export type InvitationAction = "accept" | "decline" | "revoke";
 
 export type InvitationSnapshot = SnapshotMetadata & {
   kind: "invitation";
   invitation: Invitation;
   details?: InvitationDetails;
+  role?: InvitationRole;
+  actions?: readonly InvitationAction[];
 };
 
 export type ScheduledSnapshot = SnapshotMetadata & {
@@ -276,7 +296,7 @@ export type PopupRequest =
     }
   | {
       version: ProtocolVersion;
-      type: "accept_invitation";
+      type: "accept_invitation" | "revoke_invitation" | "decline_invitation";
       invitationId: string;
     }
   | {
@@ -325,17 +345,24 @@ function isWorkerEvidence(value: unknown): value is WorkerEvidence {
 }
 
 function isInvitation(value: unknown): value is Invitation {
-  if (!isRecord(value) || !hasExactKeys(value, [
+  if (!isRecord(value)) return false;
+  const baseKeys = [
     "id", "inviterId", "inviterDisplayName", "invitedEmail", "timeZone", "startDate", "deadlineDate",
     "problemSetVersionId", "status", "createdAt",
-  ])) return false;
+  ];
+  const optionalKeys = ["terminalActorId", "terminalAt"];
+  const actual = Object.keys(value);
+  if (!actual.every((key) => baseKeys.includes(key) || optionalKeys.includes(key))) return false;
+  if (actual.filter((key) => baseKeys.includes(key)).length !== baseKeys.length) return false;
   return isString(value.id) && isString(value.inviterId) && isString(value.inviterDisplayName)
     && isString(value.invitedEmail)
     && isString(value.timeZone) && /^\d{4}-\d{2}-\d{2}$/.test(String(value.startDate))
     && /^\d{4}-\d{2}-\d{2}$/.test(String(value.deadlineDate))
     && isString(value.problemSetVersionId)
     && ["pending", "accepted", "revoked", "declined", "expired"].includes(String(value.status))
-    && isString(value.createdAt);
+    && isString(value.createdAt)
+    && (value.terminalActorId === undefined || value.terminalActorId === null || isString(value.terminalActorId))
+    && (value.terminalAt === undefined || value.terminalAt === null || isString(value.terminalAt));
 }
 
 export function isInvitationDetails(value: unknown): value is InvitationDetails {
@@ -405,7 +432,7 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
     "requestedAt",
   ])) return false;
   if (value.version !== TRANSACTION_COMMAND_VERSION
-    || !["update_display_name", "create_invitation", "accept_invitation"].includes(String(value.kind))
+    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation"].includes(String(value.kind))
     || !isString(value.idempotencyKey) || !isString(value.memberId)
     || !isString(value.memberEmail) || !isString(value.requestedAt)) return false;
   if (!isRecord(value.intent)) return false;
@@ -413,20 +440,19 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
     return hasExactKeys(value.intent, ["displayName"])
       && typeof value.intent.displayName === "string";
   }
-  if (value.kind === "accept_invitation") {
-    return hasExactKeys(value.intent, ["invitationId"]) && isString(value.intent.invitationId);
-  }
-  return hasExactKeys(value.intent, ["invitedEmail", "timeZone", "startDate", "deadlineDate", "problemSetVersionId"])
+  if (value.kind === "create_invitation") return hasExactKeys(value.intent, ["invitedEmail", "timeZone", "startDate", "deadlineDate", "problemSetVersionId"])
     && typeof value.intent.invitedEmail === "string"
     && typeof value.intent.timeZone === "string"
     && typeof value.intent.startDate === "string"
     && typeof value.intent.deadlineDate === "string"
     && typeof value.intent.problemSetVersionId === "string";
+  return hasExactKeys(value.intent, ["invitationId"])
+    && typeof value.intent.invitationId === "string";
 }
 
 export function isCommandOutcome(value: unknown): value is CommandOutcome {
   if (!isRecord(value) || typeof value.status !== "string"
-    || !["update_display_name", "create_invitation", "accept_invitation"].includes(String(value.kind))) return false;
+    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation"].includes(String(value.kind))) return false;
   if (value.status === "applied") {
     return hasExactKeys(value, ["status", "kind", "idempotencyKey"]) && isString(value.idempotencyKey);
   }
@@ -462,6 +488,14 @@ function isSnapshot(value: unknown): value is AppSnapshot {
     && !hasExactKeys(value, [...keys, "invitation", "details"])
     && !hasExactKeys(value, [...keys, "invitation", "pendingCommand"])
     && !hasExactKeys(value, [...keys, "invitation", "details", "pendingCommand"])
+    && !hasExactKeys(value, [...keys, "invitation", "role"])
+    && !hasExactKeys(value, [...keys, "invitation", "actions"])
+    && !hasExactKeys(value, [...keys, "invitation", "role", "actions"])
+    && !hasExactKeys(value, [...keys, "invitation", "role", "pendingCommand"])
+    && !hasExactKeys(value, [...keys, "invitation", "actions", "pendingCommand"])
+    && !hasExactKeys(value, [...keys, "invitation", "role", "actions", "pendingCommand"])
+    && !hasExactKeys(value, [...keys, "invitation", "details", "role", "actions"])
+    && !hasExactKeys(value, [...keys, "invitation", "details", "role", "actions", "pendingCommand"])
     && !hasExactKeys(value, [...keys, "challenge"])
     && !hasExactKeys(value, [...keys, "challenge", "pendingCommand"])) return false;
   if (value.contractVersion !== PROTOCOL_VERSION || !isString(value.authoritativeServerTime) || !isWorkerEvidence(value.worker)) {
@@ -482,10 +516,17 @@ function isSnapshot(value: unknown): value is AppSnapshot {
     const invitationKeys = [
       [...keys, "invitation"],
       [...keys, "invitation", "details"],
+      [...keys, "invitation", "role"],
+      [...keys, "invitation", "actions"],
+      [...keys, "invitation", "role", "actions"],
+      [...keys, "invitation", "details", "role", "actions"],
     ];
     const hasInvitationShape = invitationKeys.some((required) => hasOptionalPending(required));
     return hasInvitationShape && isInvitation(value.invitation)
-      && (!('details' in value) || isInvitationDetails(value.details));
+      && (!('details' in value) || isInvitationDetails(value.details))
+      && (!('role' in value) || value.role === "inviter" || value.role === "invitee")
+      && (!('actions' in value) || (Array.isArray(value.actions)
+        && value.actions.every((action) => ["accept", "decline", "revoke"].includes(String(action)))));
   }
   if (value.kind === "scheduled") {
     return (hasOptionalPending(keys) || hasOptionalPending([...keys, "challenge"]))
@@ -519,7 +560,7 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
       && typeof value.startDate === "string"
       && typeof value.deadlineDate === "string";
   }
-  if (value.type === "accept_invitation") {
+  if (value.type === "accept_invitation" || value.type === "revoke_invitation" || value.type === "decline_invitation") {
     return hasExactKeys(value, ["version", "type", "invitationId"]) && isString(value.invitationId);
   }
   return value.type === "verify_email_otp"

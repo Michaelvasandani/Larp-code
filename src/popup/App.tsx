@@ -465,15 +465,20 @@ function InvitationView({
   onSignOut,
   onAccept,
   commandOutcome,
+  onAction,
 }: {
   snapshot: Extract<AppSnapshot, { kind: "invitation" }>;
   onSignOut: () => Promise<void>;
   onAccept: (request: PopupRequest) => Promise<void>;
+  onAction: (request: PopupRequest) => Promise<void>;
   commandOutcome?: CommandOutcome;
 }) {
   const { invitation } = snapshot;
   const [isAccepting, setAccepting] = useState(false);
   const isPending = invitation.status === "pending";
+  const canAccept = snapshot.actions?.includes("accept") ?? false;
+  const canRevoke = snapshot.actions?.includes("revoke") ?? false;
+  const canDecline = snapshot.actions?.includes("decline") ?? false;
   async function accept() {
     if (!isPending || isAccepting) return;
     setAccepting(true);
@@ -516,9 +521,20 @@ function InvitationView({
       {commandOutcome?.status === "uncertain" && (
         <p className="auth-status" role="status" aria-live="polite">Checking whether acceptance completed. Refresh to reconcile the authoritative Challenge state.</p>
       )}
-      {isPending && (
+      {canAccept && isPending && (
         <button type="button" className="primary-button" onClick={() => void accept()} disabled={isAccepting || commandOutcome?.status === "uncertain"}>
           {isAccepting ? "Accepting Invitation…" : "Accept Invitation"}
+        </button>
+      )}
+      {!isPending && <p role="status">This Invitation is {invitation.status} and cannot be changed or accepted.</p>}
+      {canRevoke && isPending && (
+        <button type="button" className="primary-button" onClick={() => void onAction({ version: PROTOCOL_VERSION, type: "revoke_invitation", invitationId: invitation.id })}>
+          Revoke Invitation
+        </button>
+      )}
+      {canDecline && isPending && (
+        <button type="button" className="primary-button" onClick={() => void onAction({ version: PROTOCOL_VERSION, type: "decline_invitation", invitationId: invitation.id })}>
+          Decline Invitation
         </button>
       )}
       <a className="text-button policy-link" href="legal.html" target="_blank" rel="noreferrer">Read Legal and About</a>
@@ -581,7 +597,10 @@ export function App() {
       setAuthState({ status: "requesting_code" });
     }
     if (request.type === "create_member_account") setSetupError(undefined);
-    if (request.type === "update_display_name" || request.type === "accept_invitation") setCommandOutcome(undefined);
+    if (request.type === "update_display_name"
+      || request.type === "accept_invitation"
+      || request.type === "revoke_invitation"
+      || request.type === "decline_invitation") setCommandOutcome(undefined);
     try {
       const response = await sendRequest(request);
       if (!response.ok) {
@@ -611,7 +630,10 @@ export function App() {
           : current);
       }
     } catch {
-      if (request.type === "update_display_name" || request.type === "accept_invitation") {
+      if (request.type === "update_display_name"
+        || request.type === "accept_invitation"
+        || request.type === "revoke_invitation"
+        || request.type === "decline_invitation") {
         setCommandOutcome(createUncertainCommandOutcome("pending-recovery"));
         void requestSnapshot().then((snapshot) => {
           setState({ status: "loaded", snapshot });
@@ -686,7 +708,7 @@ export function App() {
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "invitation" && (
-        <InvitationView snapshot={state.snapshot} onSignOut={signOut} onAccept={sendAuthAction} commandOutcome={commandOutcome} />
+        <InvitationView snapshot={state.snapshot} onSignOut={signOut} onAccept={sendAuthAction} onAction={sendAuthAction} commandOutcome={commandOutcome} />
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "scheduled" && (
