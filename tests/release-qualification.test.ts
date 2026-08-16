@@ -76,6 +76,15 @@ describe("Ticket 41 release qualification", () => {
     expect(result.blockers).toContain("primary-source recheck 1 URL is not an allowlisted first-party source for chrome");
   });
 
+  it("rejects nonstandard ports on first-party primary sources", () => {
+    const record = pendingRecord();
+    record.primarySourceRechecks[0].url = "https://developer.chrome.com:8443/docs/extensions/develop/migrate/what-is-mv3";
+
+    const result = auditQualificationRecord(record, { root });
+
+    expect(result.blockers).toContain("primary-source recheck 1 URL is not an allowlisted first-party source for chrome");
+  });
+
   it("rejects a directory in place of a candidate artifact", () => {
     const record = pendingRecord();
     record.candidate.archivePath = "artifacts/ticket41-qualification";
@@ -98,6 +107,45 @@ describe("Ticket 41 release qualification", () => {
     }
   });
 
+  it("rejects remote URLs wherever local qualification evidence is required", () => {
+    const candidate = pendingRecord();
+    candidate.candidate.archivePath = "https://attacker.example/candidate.zip";
+    const candidateResult = auditQualificationRecord(candidate, { root });
+    expect(candidateResult.blockers).toContain("candidate archive path is missing or unsafe");
+
+    const trace = pendingRecord();
+    trace.candidate.networkTracePath = "https://attacker.example/trace.json";
+    const traceResult = auditQualificationRecord(trace, { root });
+    expect(traceResult.blockers).toContain("candidate network trace path is missing or unsafe");
+
+    const metadata = pendingRecord();
+    metadata.candidate.candidateBuildPath = "https://attacker.example/candidate-build.json";
+    const metadataResult = auditQualificationRecord(metadata, { root });
+    expect(metadataResult.blockers).toContain("candidate metadata path is missing or unsafe");
+
+    const evidence = pendingRecord();
+    evidence.evidence.infrastructure.evidenceRefs = ["https://attacker.example/evidence.json"];
+    const evidenceResult = auditQualificationRecord(evidence, { root });
+    expect(evidenceResult.blockers).toContain("infrastructure evidence reference must be a verifiable local artifact: https://attacker.example/evidence.json");
+
+    const publisher = pendingRecord();
+    publisher.publisherControls.developerAccount = {
+      status: "confirmed",
+      confirmedAt: publisher.recordedAt,
+      evidenceRef: "https://attacker.example/publisher.json",
+      evidenceSha256: "0".repeat(64),
+    };
+    const publisherResult = auditQualificationRecord(publisher, { root });
+    expect(publisherResult.blockers).toContain("publisher control developerAccount reference must be a verifiable local artifact: https://attacker.example/publisher.json");
+  });
+
+  it("requires a candidate trace to be from the exact controlled environment", () => {
+    const record = pendingRecord();
+    const result = auditQualificationRecord(record, { root });
+
+    expect(result.blockers).toContain("candidate network trace environment must be release- or production-controlled");
+  });
+
   it("rejects unknown fields and sensitive values instead of preserving them", () => {
     const unknownField = pendingRecord();
     unknownField.unexpected = "value";
@@ -113,6 +161,18 @@ describe("Ticket 41 release qualification", () => {
     otpField.notes.push("verification code 123456");
     const otpResult = auditQualificationRecord(otpField, { root });
     expect(otpResult.blockers).toContain("record.notes[3] contains prohibited sensitive material");
+  });
+
+  it("rejects opaque tokens and member-data assignments in free-form text", () => {
+    const tokenRecord = pendingRecord();
+    tokenRecord.notes.push("opaque-token: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    const tokenResult = auditQualificationRecord(tokenRecord, { root });
+    expect(tokenResult.blockers).toContain("record.notes[3] contains prohibited sensitive material");
+
+    const memberRecord = pendingRecord();
+    memberRecord.ownerResidualRisk.scope = "memberData: member-123";
+    const memberResult = auditQualificationRecord(memberRecord, { root });
+    expect(memberResult.blockers).toContain("record.ownerResidualRisk.scope contains prohibited sensitive material");
   });
 
   it("rejects impossible UTC dates instead of relying on Date.parse normalization", () => {

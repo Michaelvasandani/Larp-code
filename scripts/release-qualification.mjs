@@ -97,7 +97,7 @@ function httpsUrl(value) {
 
 function safeEvidenceRef(value) {
   if (!string(value)) return false;
-  if (/^[a-z]+:\/\//i.test(value)) return httpsUrl(value);
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(value)) return false;
   if (isAbsolute(value)) return false;
   const normalized = value.replaceAll("\\", "/");
   return !normalized.split("/").includes("..") && !normalized.startsWith("/");
@@ -108,6 +108,7 @@ function firstPartySourceUrl(authority, value) {
   const allowlist = PRIMARY_SOURCE_ALLOWLISTS[authority];
   if (!allowlist) return false;
   const url = new URL(value);
+  if (url.origin !== `https://${allowlist.host}`) return false;
   const pathname = url.pathname.endsWith("/") && url.pathname !== "/" ? url.pathname.slice(0, -1) : url.pathname;
   return url.hostname === allowlist.host && allowlist.paths.some((prefix) => {
     const normalizedPrefix = prefix.endsWith("/") && prefix !== "/" ? prefix.slice(0, -1) : prefix;
@@ -120,7 +121,14 @@ function repositoryFile(root, reference, label, blockers) {
     blockers.push(`${label} cannot be verified without a repository root`);
     return null;
   }
-  if (!string(reference) || /^https?:\/\//i.test(reference)) return null;
+  if (!string(reference)) {
+    blockers.push(`${label} reference is missing`);
+    return null;
+  }
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(reference)) {
+    blockers.push(`${label} reference must be a verifiable local artifact: ${reference}`);
+    return null;
+  }
   if (!safeEvidenceRef(reference)) {
     blockers.push(`${label} reference is missing or unsafe: ${reference}`);
     return null;
@@ -209,6 +217,10 @@ function checkNoSecrets(value, path = "record", blockers = []) {
       /(?:^|[^a-z])eyJ[a-z0-9_-]{20,}/i,
       /postgres(?:ql)?:\/\//i,
       /(?:password|secret|credential|api[_ -]?key)\s*[:=]\s*[^\s,}]+/i,
+      /\b(?:opaque|bearer|access|refresh)[\s_-]*token\b\s*[:=]\s*[^\s,;}\]]+/i,
+      /\b(?:member|user|account|profile|submission|solution|problem|phone|address|birth(?:date)?|dob|username|handle)(?:[\s_-]*(?:data|id|email|name|number))?\b\s*[:=]\s*[^\s,;}\]]+/i,
+      /\bopaque\b/i,
+      /\b(?:member|user|account|profile)[\s_-]+data\b/i,
       /BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY/i,
       /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i,
       /^\d{6}$/,
@@ -228,6 +240,20 @@ function checkNoSecrets(value, path = "record", blockers = []) {
     });
   }
   return blockers;
+}
+
+function checkFreeFormText(record, blockers) {
+  const fields = [];
+  if (Array.isArray(record.notes)) record.notes.forEach((value, index) => fields.push([`record.notes[${index}]`, value]));
+  if (Array.isArray(record.externalBlockers)) record.externalBlockers.forEach((value, index) => fields.push([`record.externalBlockers[${index}]`, value]));
+  if (Array.isArray(record.primarySourceRechecks)) record.primarySourceRechecks.forEach((row, index) => fields.push([`record.primarySourceRechecks[${index}].constraint`, row?.constraint]));
+  fields.push(["record.ownerResidualRisk.scope", record.ownerResidualRisk?.scope]);
+  fields.push(["record.ownerResidualRisk.acceptedBy", record.ownerResidualRisk?.acceptedBy]);
+  for (const [path, value] of fields) {
+    if (typeof value !== "string") continue;
+    add(blockers, value.length <= 500 && /^[\x20-\x7e\t\r\n]+$/.test(value), `${path} must be bounded printable text`);
+    if (/(?:^|[\s:=])[A-Za-z0-9_-]{24,}(?=$|[\s,.;!?()[\]{}])/u.test(value)) blockers.push(`${path} contains prohibited sensitive material`);
+  }
 }
 
 function gitCommitExists(root, commit) {
@@ -305,6 +331,8 @@ function checkCandidate(record, options, blockers) {
       add(blockers, sha256(tracePath) === candidate.networkTraceSha256, "candidate network trace SHA-256 does not match the recorded identity");
       try {
         const trace = JSON.parse(readFileSync(tracePath, "utf8"));
+        add(blockers, CONTROLLED_ENVIRONMENTS.has(trace.environment), "candidate network trace environment must be release- or production-controlled");
+        add(blockers, trace.environment === candidate.environment, "candidate network trace environment does not match candidate environment");
         add(blockers, trace.backendOrigin === backendOrigin, "candidate network trace origin does not match candidate backendOrigin");
         add(blockers, trace.productionEvidence === candidate.productionEvidence, "candidate network trace production flag does not match candidate identity");
       } catch { blockers.push("candidate network trace is invalid JSON"); }
@@ -541,6 +569,7 @@ export function auditQualificationRecord(input, options = {}) {
   if (!record) return { eligible: false, blockers, earliestBlockedGate: 0, record: null };
   checkAllowedKeys(record, "record", blockers);
   checkNoSecrets(record, "record", blockers);
+  checkFreeFormText(record, blockers);
   add(blockers, record.schemaVersion === QUALIFICATION_SCHEMA_VERSION, "qualification record schema version is unsupported");
   add(blockers, string(record.recordId), "qualification record ID is missing");
   add(blockers, isoDate(record.recordedAt), "qualification record date is missing or invalid");
