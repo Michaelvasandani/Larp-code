@@ -5,6 +5,8 @@ export type FoundationHealth = {
   minimumClientVersion?: string;
   updateUrl?: string;
   minimumClientReason?: "security" | "correctness";
+  /** Safe operational metadata; non-open means Member Data is unavailable. */
+  recoveryPhase?: "open" | "frozen" | "restoring";
   // These fields are negotiation metadata. Unknown future integer versions
   // must survive parsing so the client can apply its minimum-version floor
   // and return a safe update-required response.
@@ -25,6 +27,7 @@ export function isFoundationHealth(value: unknown): value is FoundationHealth {
     && (health.minimumClientVersion === undefined || typeof health.minimumClientVersion === "string")
     && (health.updateUrl === undefined || typeof health.updateUrl === "string")
     && (health.minimumClientReason === undefined || health.minimumClientReason === "security" || health.minimumClientReason === "correctness")
+    && (health.recoveryPhase === undefined || health.recoveryPhase === "open" || health.recoveryPhase === "frozen" || health.recoveryPhase === "restoring")
     && (health.snapshotContractVersion === undefined || (typeof health.snapshotContractVersion === "number" && Number.isInteger(health.snapshotContractVersion)))
     && (health.commandContractVersion === undefined || (typeof health.commandContractVersion === "number" && Number.isInteger(health.commandContractVersion)))
     && (health.supportedSnapshotContractVersions === undefined || (Array.isArray(health.supportedSnapshotContractVersions)

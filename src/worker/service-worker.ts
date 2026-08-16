@@ -83,6 +83,23 @@ const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
 const LAST_INVITATION_ID_KEY = "invitation.lastId";
 const LAST_CHALLENGE_ID_KEY = "challenge.lastId";
 const FOUNDATION_HEALTH_TIMEOUT_MS = 3_000;
+const DOMAIN_MUTATION_REQUEST_TYPES = new Set<PopupRequest["type"]>([
+  "create_member_account",
+  "delete_member_account",
+  "update_display_name",
+  "create_invitation",
+  "accept_invitation",
+  "revoke_invitation",
+  "decline_invitation",
+  "cancel_challenge",
+  "abandon_challenge",
+  "credit_solve",
+  "correct_solve",
+]);
+
+function isDomainMutationRequest(request: PopupRequest): boolean {
+  return DOMAIN_MUTATION_REQUEST_TYPES.has(request.type);
+}
 
 function createPrefixedStorage(prefix: string) {
   const storageKey = (key: string) => `${prefix}${key}`;
@@ -447,6 +464,9 @@ async function readFoundationHealth(): Promise<FoundationHealth> {
   }
   if (error) throw new Error("The backend connection is unavailable.");
   if (!isFoundationHealth(data)) throw new Error("The backend returned an invalid foundation health response.");
+  if (data.recoveryPhase && data.recoveryPhase !== "open") {
+    throw new Error("The larp-code connection is unavailable during managed recovery.");
+  }
   return data;
 }
 
@@ -827,6 +847,10 @@ async function responseWithAuth(auth: NonNullable<Extract<PopupResponse, { ok: t
 
 async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
   try {
+    // A managed freeze is checked before any adapter can persist its pending
+    // envelope. Already-sent uncertain commands still recover through their
+    // original key; a new request during restore is never queued or submitted.
+    if (isDomainMutationRequest(request)) await readFoundationHealth();
     switch (request.type) {
       case "get_snapshot": {
         let recoveredCommand: CommandOutcome | undefined;

@@ -1074,7 +1074,7 @@ export function App() {
             status: "unavailable",
             message: response.error.message,
             pendingCommand: current.status === "loaded" ? pendingCommandOf(current.snapshot) : undefined,
-            pendingRecovery: isDomainMutation(request),
+            pendingRecovery: response.error.code !== "connection_unavailable" && isDomainMutation(request),
           }));
         }
         if (request.type === "create_member_account") setSetupError(response.error.message);

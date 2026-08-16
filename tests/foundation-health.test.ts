@@ -25,4 +25,19 @@ describe("foundation health negotiation metadata", () => {
       supportedSnapshotContractVersions: [2, "3"],
     })).toBe(false);
   });
+
+  it("accepts the safe recovery phase metadata used to surface managed outage state", () => {
+    expect(isFoundationHealth({
+      service: "larp-code",
+      schemaVersion: 14,
+      serverTime: "2026-08-16T00:00:00.000Z",
+      recoveryPhase: "frozen",
+    })).toBe(true);
+    expect(isFoundationHealth({
+      service: "larp-code",
+      schemaVersion: 14,
+      serverTime: "2026-08-16T00:00:00.000Z",
+      recoveryPhase: "paused",
+    })).toBe(false);
+  });
 });

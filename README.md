@@ -47,6 +47,10 @@ pnpm build
 pnpm package:check
 ```
 
+Managed database recovery is exercised separately with `pnpm
+recovery:rehearse`; the operator sequence and Gate 4 evidence contract are in
+[`docs/operations/recovery-runbook.md`](docs/operations/recovery-runbook.md).
+
 The worker persists Supabase's session through asynchronous
 `chrome.storage.local`, enforces a worker-owned OTP resend cooldown, makes one
 normal refresh attempt for expired credentials, and clears Member state on
