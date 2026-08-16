@@ -31,7 +31,9 @@ function storageWith(values: Record<string, unknown> = {}): PendingCommandStorag
 
 const identity = { memberId: account.id, memberEmail: account.email };
 
-function pending(overrides: Partial<PendingCommand> = {}): PendingCommand {
+type DisplayNamePendingCommand = Extract<PendingCommand, { kind: "update_display_name" }>;
+
+function pending(overrides: Partial<DisplayNamePendingCommand> = {}): DisplayNamePendingCommand {
   return {
     version: TRANSACTION_COMMAND_VERSION,
     kind: "update_display_name",

@@ -10,8 +10,10 @@ import {
   type ProtocolError,
   type WorkerEvidence,
 } from "../shared/protocol";
+import { PINNED_PROBLEM_SET_VERSION } from "../catalog/problem-set";
 import {
   createAuthSessionAdapter,
+  type AuthSession,
   type AuthApi,
   type MemberStorage,
 } from "./auth-session";
@@ -24,6 +26,11 @@ import {
   createDisplayNameCommandAdapter,
   type DisplayNameCommandRpc,
 } from "./command-recovery";
+import {
+  createInvitationCommandAdapter,
+  parseInvitation,
+  type CreateInvitationRpc,
+} from "./invitation";
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
@@ -117,8 +124,41 @@ const displayNameCommandRpc: DisplayNameCommandRpc = {
     return parseMemberAccount(data);
   },
 };
+const invitationCommandRpc: CreateInvitationRpc = {
+  async createInvitation(input) {
+    const { data, error } = await client.rpc("create_invitation_v1", {
+      p_idempotency_key: input.idempotencyKey,
+      p_command_version: input.commandVersion,
+      p_command_kind: input.commandKind,
+      p_member_id: input.memberId,
+      p_member_email: input.memberEmail,
+      p_invited_email: input.terms.invitedEmail,
+      p_challenge_time_zone: input.terms.timeZone,
+      p_start_date: input.terms.startDate,
+      p_deadline_date: input.terms.deadlineDate,
+      p_problem_set_version_id: input.problemSetVersionId,
+    });
+    if (error) throw error;
+    return parseInvitation(data);
+  },
+  async dispatchInvitationNotice(invitationId) {
+    const { error } = await client.functions.invoke("send-invitation-notice", {
+      body: { invitationId },
+    });
+    if (error) throw error;
+  },
+  async getPendingInvitation() {
+    const { data, error } = await client.rpc("get_pending_invitation_for_member_v1");
+    if (error) throw error;
+    return data === null ? null : parseInvitation(data);
+  },
+};
 const displayNameCommands = createDisplayNameCommandAdapter({
   rpc: displayNameCommandRpc,
+  storage: memberStorage,
+});
+const invitationCommands = createInvitationCommandAdapter({
+  rpc: invitationCommandRpc,
   storage: memberStorage,
 });
 const bootId = crypto.randomUUID();
@@ -181,6 +221,75 @@ function snapshotMetadata(health: FoundationHealth, worker: WorkerEvidence, pend
   };
 }
 
+type AuthenticatedMember = {
+  session: AuthSession;
+  identity: { memberId: string; memberEmail: string };
+};
+
+async function withAuthenticatedMember<T>(operation: (member: AuthenticatedMember) => Promise<T>): Promise<T> {
+  const sessionState = await authSessionAdapter.restoreSession();
+  if (sessionState.status === "service_unavailable") {
+    throw new Error("The authentication connection is unavailable.");
+  }
+  if (sessionState.status !== "authenticated") {
+    await displayNameCommands.clearPending();
+    throw new Error("Authentication is required.");
+  }
+  const memberEmail = sessionState.session.user.email;
+  if (!memberEmail) throw new Error("A verified email is required.");
+  return operation({
+    session: sessionState.session,
+    identity: { memberId: sessionState.session.user.id, memberEmail },
+  });
+}
+
+type CommandResult =
+  | { kind: "update_display_name"; result: Awaited<ReturnType<typeof displayNameCommands.updateDisplayName>> }
+  | { kind: "create_invitation"; result: Awaited<ReturnType<typeof invitationCommands.createInvitation>> };
+type AppliedInvitationResult = Extract<Extract<CommandResult, { kind: "create_invitation" }>['result'], { status: "applied" }>;
+
+async function respondToCommand(
+  command: CommandResult,
+  buildAppliedSnapshot?: (result: AppliedInvitationResult) => Promise<AppSnapshot>,
+): Promise<PopupResponse> {
+  let snapshot: AppSnapshot;
+  try {
+    snapshot = await getAppSnapshot(false);
+  } catch (error) {
+    if (command.result.status === "uncertain") {
+      return {
+        ok: true,
+        command: createUncertainCommandOutcome(command.result.idempotencyKey, command.kind),
+      };
+    }
+    throw error;
+  }
+  if (command.result.status === "uncertain") {
+    return {
+      ok: true,
+      snapshot,
+      command: createUncertainCommandOutcome(command.result.idempotencyKey, command.kind),
+    };
+  }
+  if (command.result.status === "rejected") {
+    return {
+      ok: true,
+      snapshot,
+      command: { status: "rejected", kind: command.kind, code: command.result.code, message: command.result.message },
+    };
+  }
+  if (command.kind === "create_invitation" && buildAppliedSnapshot) {
+    snapshot = await buildAppliedSnapshot(
+      command.result as AppliedInvitationResult,
+    );
+  }
+  return {
+    ok: true,
+    snapshot,
+    command: { status: "applied", kind: command.kind, idempotencyKey: command.result.idempotencyKey },
+  };
+}
+
 async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
   const sessionStatePromise = pendingSnapshotSession ?? authSessionAdapter.restoreSession();
   pendingSnapshotSession = undefined;
@@ -200,13 +309,20 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     memberId: sessionState.session.user.id,
     email: sessionState.session.user.email ?? "",
   };
-  if (reconcilePending) await displayNameCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
+  if (reconcilePending) {
+    await displayNameCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
+    await invitationCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
+  }
   const account = await memberAccount.getMemberAccount();
   if (!account) {
     await displayNameCommands.clearPending();
     const email = sessionState.session.user.email;
     if (!email) throw new Error("The authenticated session has no verified email.");
     return { ...snapshotMetadata(health, worker, null), kind: "setup_required", email };
+  }
+  const incomingInvitation = await invitationCommandRpc.getPendingInvitation?.();
+  if (incomingInvitation) {
+    return { ...snapshotMetadata(health, worker, null), kind: "invitation", invitation: incomingInvitation };
   }
   const pendingCommand = await displayNameCommands.readPending();
   const metadata = snapshotMetadata(health, worker, pendingCommand);
@@ -253,57 +369,36 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
         return responseWithAuth(result);
       }
       case "create_member_account": {
-        const sessionState = await authSessionAdapter.restoreSession();
-        if (sessionState.status === "service_unavailable") throw new Error("The authentication connection is unavailable.");
-        if (sessionState.status !== "authenticated") {
-          await displayNameCommands.clearPending();
-          throw new Error("Authentication is required.");
-        }
-        const memberAccount = createMemberAccountAdapter({ rpc: memberAccountRpc, session: sessionState.session });
-        await memberAccount.createMemberAccount(request);
+        await withAuthenticatedMember(async ({ session }) => {
+          const memberAccount = createMemberAccountAdapter({ rpc: memberAccountRpc, session });
+          await memberAccount.createMemberAccount(request);
+        });
         return { ok: true, snapshot: await getAppSnapshot() };
       }
       case "update_display_name": {
-        const sessionState = await authSessionAdapter.restoreSession();
-        if (sessionState.status === "service_unavailable") throw new Error("The authentication connection is unavailable.");
-        if (sessionState.status !== "authenticated") {
-          await displayNameCommands.clearPending();
-          throw new Error("Authentication is required.");
-        }
-        const memberEmail = sessionState.session.user.email;
-        if (!memberEmail) throw new Error("A verified email is required.");
-        const result = await displayNameCommands.updateDisplayName(request.displayName, {
-          memberId: sessionState.session.user.id,
-          memberEmail,
+        return withAuthenticatedMember(async ({ identity }) => {
+          const result = await displayNameCommands.updateDisplayName(request.displayName, identity);
+          return respondToCommand({ kind: "update_display_name", result });
         });
-        let snapshot: AppSnapshot;
-        try {
-          snapshot = await getAppSnapshot(false);
-        } catch (error) {
-          if (result.status === "uncertain") {
-            return { ok: true, command: createUncertainCommandOutcome(result.idempotencyKey) };
-          }
-          throw error;
-        }
-        if (result.status === "applied") {
-          return {
-            ok: true,
-            snapshot,
-            command: { status: "applied", kind: "update_display_name", idempotencyKey: result.idempotencyKey },
-          };
-        }
-        if (result.status === "uncertain") {
-          return {
-            ok: true,
-            snapshot,
-            command: createUncertainCommandOutcome(result.idempotencyKey),
-          };
-        }
-        return {
-          ok: true,
-          snapshot,
-          command: { status: "rejected", kind: "update_display_name", code: result.code, message: result.message },
-        };
+      }
+      case "create_invitation": {
+        return withAuthenticatedMember(async ({ identity }) => {
+          const current = await getAppSnapshot(false);
+          const result = await invitationCommands.createInvitation(
+            request,
+            identity,
+            PINNED_PROBLEM_SET_VERSION.id,
+            current.authoritativeServerTime,
+          );
+          return respondToCommand(
+            { kind: "create_invitation", result },
+            async (applied) => {
+              const health = await readFoundationHealth();
+              const worker = await workerEvidencePromise;
+              return { ...snapshotMetadata(health, worker, null), kind: "invitation", invitation: applied.invitation };
+            },
+          );
+        });
       }
       case "sign_out": {
         await authSessionAdapter.signOut();

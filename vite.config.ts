@@ -78,6 +78,7 @@ export default defineConfig({
       input: {
         popup: resolve(process.cwd(), "src/popup.html"),
         privacy: resolve(process.cwd(), "src/privacy.html"),
+        legal: resolve(process.cwd(), "src/legal.html"),
         "service-worker": resolve(process.cwd(), "src/worker/service-worker.ts"),
       },
       output: {

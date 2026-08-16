@@ -316,7 +316,12 @@ function MemberAccountView({
   commandOutcome?: CommandOutcome;
 }) {
   const [displayName, setDisplayName] = useState(snapshot.account.displayName);
+  const [invitedEmail, setInvitedEmail] = useState("");
+  const [timeZone, setTimeZone] = useState("UTC");
+  const [startDate, setStartDate] = useState("");
+  const [deadlineDate, setDeadlineDate] = useState("");
   const [isSubmitting, setSubmitting] = useState(false);
+  const [isInviting, setInviting] = useState(false);
 
   useEffect(() => setDisplayName(snapshot.account.displayName), [snapshot.account.displayName]);
 
@@ -331,6 +336,26 @@ function MemberAccountView({
       setSubmitting(false);
     }
   }
+
+  async function submitInvitation(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending || isInviting) return;
+    setInviting(true);
+    try {
+      await onUpdate({
+        version: PROTOCOL_VERSION,
+        type: "create_invitation",
+        invitedEmail,
+        timeZone,
+        startDate,
+        deadlineDate,
+      });
+    } finally {
+      setInviting(false);
+    }
+  }
+
+  const invitationCommand = commandOutcome?.kind === "create_invitation" ? commandOutcome : undefined;
 
   return (
     <section className="state-card" aria-labelledby="account-title">
@@ -372,6 +397,58 @@ function MemberAccountView({
         )}
       </form>
       <p>Your email remains your sole sign-in and recovery authority.</p>
+      <hr />
+      <h3>Invite one Member</h3>
+      <p className="field-help">
+        One pending outgoing Invitation is allowed. It does not reserve Challenge capacity, and changing a term requires a replacement Invitation.
+      </p>
+      <form onSubmit={submitInvitation} aria-describedby="invitation-status invitation-help">
+        <label htmlFor="invited-email">Invited email</label>
+        <input
+          id="invited-email"
+          type="email"
+          autoComplete="email"
+          value={invitedEmail}
+          onChange={(event) => setInvitedEmail(event.target.value)}
+          required
+          disabled={pending || isInviting}
+        />
+        <label htmlFor="challenge-time-zone">Challenge Time Zone (IANA)</label>
+        <input
+          id="challenge-time-zone"
+          type="text"
+          list="iana-time-zones"
+          value={timeZone}
+          onChange={(event) => setTimeZone(event.target.value)}
+          required
+          disabled={pending || isInviting}
+          aria-describedby="invitation-help"
+        />
+        <datalist id="iana-time-zones">
+          <option value="UTC" />
+          <option value="America/Los_Angeles" />
+          <option value="America/New_York" />
+          <option value="Europe/London" />
+          <option value="Asia/Tokyo" />
+        </datalist>
+        <p id="invitation-help" className="field-help">Start Date must be the next calendar day or later in this shared zone. Dates are inclusive.</p>
+        <label htmlFor="challenge-start-date">Start Date</label>
+        <input id="challenge-start-date" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required disabled={pending || isInviting} />
+        <label htmlFor="challenge-deadline-date">Deadline Date</label>
+        <input id="challenge-deadline-date" type="date" value={deadlineDate} onChange={(event) => setDeadlineDate(event.target.value)} required disabled={pending || isInviting} />
+        {invitationCommand?.status === "rejected" && (
+          <p id="invitation-status" className="auth-status error-status" role="alert">{invitationCommand.message}</p>
+        )}
+        {invitationCommand?.status === "uncertain" && (
+          <p id="invitation-status" className="auth-status" role="status" aria-live="polite">
+            Checking whether this completed. <button type="button" className="text-button" onClick={onRetry}>Check again</button>
+          </p>
+        )}
+        <button type="submit" className="primary-button" disabled={pending || isInviting || !invitedEmail.trim() || !timeZone.trim() || !startDate || !deadlineDate}>
+          {isInviting ? "Creating Invitation…" : "Create Invitation"}
+        </button>
+      </form>
+      <a className="text-button policy-link" href="legal.html" target="_blank" rel="noreferrer">Read Legal and About</a>
       <a className="text-button policy-link" href="privacy.html" target="_blank" rel="noreferrer">
         Read the public privacy policy
       </a>
@@ -379,6 +456,37 @@ function MemberAccountView({
         Sign out
       </button>
       <SnapshotDetails snapshot={snapshot} />
+    </section>
+  );
+}
+
+function InvitationView({
+  snapshot,
+  onSignOut,
+}: {
+  snapshot: Extract<AppSnapshot, { kind: "invitation" }>;
+  onSignOut: () => Promise<void>;
+}) {
+  const { invitation } = snapshot;
+  return (
+    <section className="state-card" aria-labelledby="invitation-title">
+      <p className="eyebrow">INVITATION</p>
+      <h2 id="invitation-title">Invitation terms</h2>
+      <p>
+        Authenticate with the invited email to view these complete terms. The invitation email is privacy-minimal and does not include Challenge details.
+      </p>
+      <dl className="account-details">
+        <div><dt>From</dt><dd>{invitation.inviterDisplayName}</dd></div>
+        <div><dt>Invited email</dt><dd>{invitation.invitedEmail}</dd></div>
+        <div><dt>Challenge Time Zone</dt><dd>{invitation.timeZone}</dd></div>
+        <div><dt>Start Date</dt><dd>{invitation.startDate}</dd></div>
+        <div><dt>Deadline Date</dt><dd>{invitation.deadlineDate}</dd></div>
+        <div><dt>Problem Set Version</dt><dd>{invitation.problemSetVersionId}</dd></div>
+      </dl>
+      <p>Both Members will have equal authority after acceptance. Either Member can end the shared Challenge.</p>
+      <a className="text-button policy-link" href="legal.html" target="_blank" rel="noreferrer">Read Legal and About</a>
+      <a className="text-button policy-link" href="privacy.html" target="_blank" rel="noreferrer">Read the public privacy policy</a>
+      <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
     </section>
   );
 }
@@ -518,10 +626,15 @@ export function App() {
         />
       )}
 
+      {state.status === "loaded" && state.snapshot.kind === "invitation" && (
+        <InvitationView snapshot={state.snapshot} onSignOut={signOut} />
+      )}
+
       {state.status === "loaded"
         && state.snapshot.kind !== "signed_out"
         && state.snapshot.kind !== "setup_required"
-        && state.snapshot.kind !== "account" && (
+        && state.snapshot.kind !== "account"
+        && state.snapshot.kind !== "invitation" && (
         <AuthenticatedPlaceholder snapshot={state.snapshot} onSignOut={signOut} />
       )}
 

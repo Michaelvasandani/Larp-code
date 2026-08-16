@@ -55,7 +55,10 @@ function classifyKnownFailure(error: unknown): { code: "unauthorized" | "validat
   return null;
 }
 
-function sameIdentity(left: PendingCommand, right: CommandIdentity): boolean {
+export function sameIdentity(
+  left: Pick<PendingCommand, "memberId" | "memberEmail">,
+  right: CommandIdentity,
+): boolean {
   return left.memberId === right.memberId
     && left.memberEmail.toLowerCase() === right.memberEmail.toLowerCase();
 }
@@ -119,6 +122,9 @@ export function createDisplayNameCommandAdapter({
   const pendingStore = createPendingCommandStore(storage);
 
   async function send(pending: PendingCommand): Promise<DisplayNameCommandResult> {
+    if (pending.kind !== "update_display_name" || typeof pending.intent.displayName !== "string") {
+      return createUncertainCommandOutcome(pending.idempotencyKey, pending.kind);
+    }
     try {
       const account = await rpc.updateDisplayName({
         idempotencyKey: pending.idempotencyKey,
@@ -158,7 +164,7 @@ export function createDisplayNameCommandAdapter({
     if (existing) {
       if (!sameIdentity(existing, identity)) {
         await pendingStore.clear(existing.idempotencyKey);
-      } else if (existing.intent.displayName !== normalized.value) {
+      } else if (existing.kind !== "update_display_name" || existing.intent.displayName !== normalized.value) {
         return createUncertainCommandOutcome(existing.idempotencyKey);
       } else {
         return (await send(existing));

@@ -153,6 +153,58 @@ async function invokeDisplayNameCommandRpc(page, { idempotencyKey, memberId, mem
   }, { apiUrl: backendUrl, anonKey: backendAnonKey, token: accessToken, idempotencyKey, memberId, memberEmail, displayName });
 }
 
+async function invokeInvitationCommandRpc(page, { idempotencyKey, memberId, memberEmail, invitedEmail, startDate, deadlineDate }) {
+  const accessToken = await storedAccessToken(page);
+  if (!accessToken) throw new Error("The acceptance session did not contain an access token.");
+  return page.evaluate(async ({ apiUrl, anonKey, token, idempotencyKey: key, memberId: id, memberEmail: address, invitedEmail: destination, startDate: start, deadlineDate: deadline }) => {
+    const response = await fetch(`${apiUrl}/rest/v1/rpc/create_invitation_v1`, {
+      method: "POST",
+      headers: { apikey: anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_idempotency_key: key,
+        p_command_version: 1,
+        p_command_kind: "create_invitation",
+        p_member_id: id,
+        p_member_email: address,
+        p_invited_email: destination,
+        p_challenge_time_zone: "UTC",
+        p_start_date: start,
+        p_deadline_date: deadline,
+        p_problem_set_version_id: "neetcode-150-2026-08-15",
+      }),
+    });
+    return { status: response.status, body: await response.json() };
+  }, { apiUrl: backendUrl, anonKey: backendAnonKey, token: accessToken, idempotencyKey, memberId, memberEmail, invitedEmail, startDate, deadlineDate });
+}
+
+async function invokeInvitationReadRpc(page, invitationId) {
+  const accessToken = await storedAccessToken(page);
+  if (!accessToken) throw new Error("The acceptance session did not contain an access token.");
+  return page.evaluate(async ({ apiUrl, anonKey, token, id }) => {
+    const response = await fetch(`${apiUrl}/rest/v1/rpc/get_invitation_v1`, {
+      method: "POST",
+      headers: { apikey: anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ p_invitation_id: id }),
+    });
+    return { status: response.status, body: await response.json() };
+  }, { apiUrl: backendUrl, anonKey: backendAnonKey, token: accessToken, id: invitationId });
+}
+
+function runSql(sql) {
+  const dbUrl = process.env.DB_URL ?? localBackendValue("DB_URL");
+  if (!dbUrl) throw new Error("The local database URL is required for SQL acceptance.");
+  return execFileSync("psql", [dbUrl, "-v", "ON_ERROR_STOP=1", "-At", "-c", sql], { encoding: "utf8" }).trim();
+}
+
+function sqlRejects(sql) {
+  try {
+    runSql(sql);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 async function readMemberTableDirectly(page) {
   const accessToken = await storedAccessToken(page);
   if (!accessToken) throw new Error("The acceptance session did not contain an access token.");
@@ -224,6 +276,7 @@ try {
   check(Number.isInteger(firstBoot) && firstBoot >= 1, "Popup receives a fresh worker snapshot");
 
   const email = `smoke-${Date.now()}@example.test`;
+  const inviteeEmail = `smoke-invitee-${Date.now()}@example.test`;
   await clickButton(page, "Sign in with email");
   await page.type("#member-email", email);
   await clickButton(page, "Request sign-in code");
@@ -398,6 +451,42 @@ try {
   page = await openPopup(extensionId);
   await page.waitForFunction(() => document.body.innerText.includes("Welcome, Ada After Commit"), { timeout: 15_000 });
   check(true, "Popup closure after commit but before response recovers one durable display-name update");
+  const invitationStart = new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 10);
+  const invitationDeadline = new Date(Date.now() + 11 * 86_400_000).toISOString().slice(0, 10);
+  const invitationIdempotencyKey = crypto.randomUUID();
+  const invitationCreated = await invokeInvitationCommandRpc(page, {
+    idempotencyKey: invitationIdempotencyKey,
+    memberId: commandMemberId,
+    memberEmail: email,
+    invitedEmail: inviteeEmail,
+    startDate: invitationStart,
+    deadlineDate: invitationDeadline,
+  });
+  check(invitationCreated.status === 200
+    && invitationCreated.body?.invitedEmail === inviteeEmail
+    && invitationCreated.body?.problemSetVersionId === "neetcode-150-2026-08-15", "Invitation pins the explicit reviewed Problem Set Version");
+  const invitationId = invitationCreated.body?.id;
+  check(typeof invitationId === "string", "Invitation acceptance captures an opaque invitation identifier");
+  const duplicateOutgoing = await invokeInvitationCommandRpc(page, {
+    idempotencyKey: crypto.randomUUID(),
+    memberId: commandMemberId,
+    memberEmail: email,
+    invitedEmail: inviteeEmail,
+    startDate: invitationStart,
+    deadlineDate: invitationDeadline,
+  });
+  check(duplicateOutgoing.status >= 400 && /pending outgoing/i.test(String(duplicateOutgoing.body?.message)), "Duplicate outgoing invitations are rejected without a second pending invitation");
+  const noticeState = runSql(`select delivered_at is null from public.transactional_notices where event_key = 'invitation:${invitationId}:created'`);
+  check(noticeState === "t", "Invitation creation enqueues one undelivered transactional notice for dispatch");
+  check(runSql("select count(*) from public.problem_set_version_problems where problem_set_version_id = 'neetcode-150-2026-08-15'") === "150", "Reviewed catalog version has exactly 150 immutable records");
+  check(sqlRejects("update public.problem_set_versions set created_at = created_at where id = 'neetcode-150-2026-08-15'"), "Database rejects every Problem Set Version update");
+  check(sqlRejects("delete from public.problem_set_versions where id = 'neetcode-150-2026-08-15'"), "Database rejects every Problem Set Version delete");
+  check(sqlRejects("update public.problems set title = title where id = 'problem:0217-contains-duplicate'"), "Database rejects imported problem updates");
+  check(sqlRejects("delete from public.problems where id = 'problem:0217-contains-duplicate'"), "Database rejects imported problem deletes");
+  check(sqlRejects("update public.problem_set_version_problems set title = title where problem_set_version_id = 'neetcode-150-2026-08-15' and problem_id = 'problem:0217-contains-duplicate'"), "Database rejects pinned record updates");
+  check(sqlRejects("delete from public.problem_set_version_problems where problem_set_version_id = 'neetcode-150-2026-08-15' and problem_id = 'problem:0217-contains-duplicate'"), "Database rejects pinned record deletes");
+  const genericInvitationRead = await invokeInvitationReadRpc(page, crypto.randomUUID());
+  check(genericInvitationRead.status >= 400 && genericInvitationRead.body?.message === "Invitation is unavailable.", "Unauthorized invitation reads return a generic response");
   check(true, "Packaged email OTP sign-in restores an authenticated Member Account snapshot");
   const expired = await sendExtensionRequest(page, {
     version: 1,
@@ -474,7 +563,7 @@ try {
   await clickButton(page, "Sign out");
   await page.waitForFunction(() => document.body.innerText.includes("You’re signed out"));
 
-  const reauthEmail = `smoke-reauth-${Date.now()}@example.test`;
+  const reauthEmail = inviteeEmail;
   const reauthRequest = await sendExtensionRequest(page, {
     version: 1,
     type: "request_email_otp",
@@ -497,8 +586,8 @@ try {
     checkbox.forEach((candidate) => { if (candidate instanceof HTMLInputElement) candidate.click(); });
   });
   await clickButton(page, "Create Member Account");
-  await page.waitForFunction(() => document.body.innerText.includes("Welcome, Second Member"), { timeout: 15_000 });
-  check(true, "Second authenticated profile creates its own Member Account");
+  await page.waitForFunction(() => document.body.innerText.includes("Invitation terms"), { timeout: 15_000 });
+  check(true, "Second authenticated profile creates its own Member Account and receives its pending invitation terms");
   const secondIdentity = await storedSessionIdentity(page);
   check(typeof secondIdentity === "string" && secondIdentity !== authenticatedIdentity, "Two profiles have distinct authenticated identities");
   const secondOwnAccount = await readOwnAccountRpc(page);
@@ -506,6 +595,11 @@ try {
     && secondOwnAccount.body?.id === secondIdentity
     && secondOwnAccount.body?.displayName === "Second Member"
     && secondOwnAccount.body?.displayName !== "<img src=x onerror=alert(1)>", "Authorized account RPC returns only the current profile");
+  const invitedTerms = await invokeInvitationReadRpc(page, invitationId);
+  check(invitedTerms.status === 200
+    && invitedTerms.body?.id === invitationId
+    && invitedTerms.body?.invitedEmail === inviteeEmail
+    && invitedTerms.body?.problemSetVersionId === "neetcode-150-2026-08-15", "Authenticated invitee retrieves complete invitation terms");
   const directMemberRead = await readMemberTableDirectly(page);
   check([401, 403].includes(directMemberRead.status) || (directMemberRead.status === 200 && directMemberRead.text === "[]"), "Direct member table reads are blocked by the authorization boundary");
   const crossProfileSetup = await sendExtensionRequest(page, {
@@ -516,9 +610,8 @@ try {
     consentAccepted: true,
   });
   check(crossProfileSetup.ok
-    && crossProfileSetup.snapshot?.kind === "account"
-    && crossProfileSetup.snapshot.account.id === secondIdentity
-    && crossProfileSetup.snapshot.account.displayName === "Second Member", "Setup replay cannot read or overwrite another profile");
+    && crossProfileSetup.snapshot?.kind === "invitation"
+    && crossProfileSetup.snapshot.invitation.invitedEmail === inviteeEmail, "Setup replay cannot read or overwrite another profile");
   const sessionPrepared = await page.evaluate(async () => {
     const values = await chrome.storage.local.get(null);
     const key = Object.keys(values).find((candidate) => candidate.includes("supabase") && candidate.includes("auth-token"));

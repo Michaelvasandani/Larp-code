@@ -100,6 +100,37 @@ describe("versioned popup/worker protocol", () => {
       type: "update_display_name",
       displayName: "Grace",
     })).toBe(true);
+    expect(isPopupRequest({
+      version: PROTOCOL_VERSION,
+      type: "create_invitation",
+      invitedEmail: "friend@example.test",
+      timeZone: "America/Los_Angeles",
+      startDate: "2026-08-16",
+      deadlineDate: "2026-09-14",
+    })).toBe(true);
+  });
+
+  it("accepts a complete Invitation Snapshot and rejects omitted terms", () => {
+    const { account: _account, ...accountMetadata } = accountSnapshot;
+    expect(_account).toBeDefined();
+    const invitationSnapshot = {
+      ...accountMetadata,
+      kind: "invitation" as const,
+      invitation: {
+        id: "invitation-1",
+        inviterId: "member-1",
+        inviterDisplayName: "Ada",
+        invitedEmail: "friend@example.test",
+        timeZone: "America/Los_Angeles",
+        startDate: "2026-08-16",
+        deadlineDate: "2026-09-14",
+        problemSetVersionId: "version-a",
+        status: "pending" as const,
+        createdAt: "2026-08-15T00:00:00.000Z",
+      },
+    };
+    expect(isPopupResponse({ ok: true, snapshot: invitationSnapshot })).toBe(true);
+    expect(isPopupResponse({ ok: true, snapshot: { ...invitationSnapshot, invitation: undefined } })).toBe(false);
   });
 
   it("accepts an account-bound pending command and typed command outcome", () => {
