@@ -700,7 +700,9 @@ export function App() {
   const [realtimeStatus, setRealtimeStatus] = useState<"connecting" | "subscribed" | "closed" | "error">("connecting");
 
   const loadSnapshot = useCallback(() => {
-    setState({ status: "loading" });
+    // Keep an already-rendered view mounted during invalidation/focus refetches
+    // so local form state is not reset by a background Snapshot refresh.
+    setState((current) => current.status === "loaded" ? current : { status: "loading" });
     void requestSnapshot()
       .then((snapshot) => {
         setAuthState(defaultSignInState);

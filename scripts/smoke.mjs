@@ -281,15 +281,25 @@ try {
   const email = `smoke-${Date.now()}@example.test`;
   const inviteeEmail = `smoke-invitee-${Date.now()}@example.test`;
   await clickButton(page, "Sign in with email");
+  await page.waitForSelector("#member-email", { visible: true });
   await page.type("#member-email", email);
   await clickButton(page, "Request sign-in code");
-  await page.waitForFunction(() => document.body.innerText.includes("A six-digit code can be entered now"));
+  // Wait for the actual code-entry control. The status copy can render before
+  // SignedOut's effect flips the form into the DOM.
+  await page.waitForSelector("#member-code", { visible: true });
   let code = await waitForOtp(email);
   await page.type("#member-code", "000000");
+  await page.waitForFunction(() => {
+    const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes("Verify code"));
+    return button instanceof HTMLButtonElement && !button.disabled;
+  });
   await clickButton(page, "Verify code");
-  await page.waitForFunction(() => document.body.innerText.includes("That code is not valid")
-    || document.body.innerText.includes("That code has expired")
-    || document.body.innerText.includes("Too many requests"));
+  await page.waitForFunction(() => {
+    const status = document.querySelector("#sign-in-status")?.textContent ?? "";
+    return status.includes("That code is not valid")
+      || status.includes("That code has expired")
+      || status.includes("Too many requests");
+  });
   const cooldown = await sendExtensionRequest(page, {
     version: 1,
     type: "resend_email_otp",
