@@ -48,12 +48,21 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     const client = createClient(credentials!.url, credentials!.anonKey);
     const signedIn = await client.auth.signInWithPassword({ email, password: "pass-12345" });
     expect(signedIn.error).toBeNull();
-    const account = await client.rpc("create_member_account_v1", {
+    let account = await client.rpc("create_member_account_v1", {
       p_display_name: name,
       p_adult_confirmed: true,
       p_consent_accepted: true,
       p_consent_version: "PRIV-031-v1",
     });
+    if (account.error?.code === "PGRST303") {
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      account = await client.rpc("create_member_account_v1", {
+        p_display_name: name,
+        p_adult_confirmed: true,
+        p_consent_accepted: true,
+        p_consent_version: "PRIV-031-v1",
+      });
+    }
     expect(account.error).toBeNull();
     const result = { id: created.data.user!.id, email, client };
     profiles.set(name, result);
@@ -773,6 +782,19 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     const deleted = await deleteMember(deleting);
     expect(deleted.error).toBeNull();
     expect(deleted.data).toMatchObject({ deletedMemberId: expect.any(String) });
+    const accountEndedNotice = await admin.from("transactional_notices")
+      .select("notice_type,recipient_email,recipient_member_id,actor_member_id,challenge_id,delivery_state")
+      .eq("source_event_key", `challenge:${challengeId}:account-ended`)
+      .maybeSingle();
+    expect(accountEndedNotice.error).toBeNull();
+    expect(accountEndedNotice.data).toMatchObject({
+      notice_type: "challenge_account_ended",
+      recipient_email: partner.email.toLowerCase(),
+      recipient_member_id: partner.id,
+      actor_member_id: deleted.data.deletedMemberId,
+      challenge_id: challengeId,
+      delivery_state: "queued",
+    });
     const partnerView = await partner.client.rpc("get_challenge_v1", { p_challenge_id: challengeId });
     expect(partnerView.error).toBeNull();
     expect(partnerView.data).toMatchObject({ status: "abandoned", terminalActorId: deleted.data.deletedMemberId, members: expect.arrayContaining([
@@ -810,6 +832,35 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     expect(scheduledDeleted.error).toBeNull();
     expect((await scheduledPartner.client.rpc("get_challenge_v1", { p_challenge_id: scheduledChallengeId })).data).toMatchObject({ status: "canceled" });
 
+    // A terminal Challenge has already released its commitments. Deleting a
+    // participant only anonymizes that historical row; it does not create a
+    // misleading account-ended lifecycle notice.
+    const terminalOwner = await profile("TerminalDelete");
+    const terminalPartner = await profile("TerminalDeletePartner");
+    const terminalInvitation = await admin.from("invitations").insert({
+      inviter_id: terminalOwner.id, invited_email: terminalPartner.email, challenge_time_zone: "UTC",
+      start_date: "2099-01-01", deadline_date: "2099-01-30", problem_set_version_id: "neetcode-150-2026-08-15", status: "accepted",
+    }).select("id").single();
+    expect(terminalInvitation.error).toBeNull();
+    const terminalChallenge = await admin.from("challenges").insert({
+      invitation_id: terminalInvitation.data!.id, inviter_id: terminalOwner.id, invited_member_id: terminalPartner.id,
+      challenge_time_zone: "UTC", start_date: "2099-01-01", deadline_date: "2099-01-30",
+      problem_set_version_id: "neetcode-150-2026-08-15", status: "completed", terminal_at: new Date().toISOString(),
+    }).select("id").single();
+    expect(terminalChallenge.error).toBeNull();
+    const terminalChallengeId = terminalChallenge.data!.id as string;
+    expect((await admin.from("challenge_members").insert([
+      { challenge_id: terminalChallengeId, member_id: terminalOwner.id, member_email: terminalOwner.email, display_name: "TerminalDelete" },
+      { challenge_id: terminalChallengeId, member_id: terminalPartner.id, member_email: terminalPartner.email, display_name: "TerminalPartner" },
+    ])).error).toBeNull();
+    expect((await deleteMember(terminalOwner)).error).toBeNull();
+    const terminalNotice = await admin.from("transactional_notices")
+      .select("id")
+      .eq("source_event_key", `challenge:${terminalChallengeId}:account-ended`)
+      .maybeSingle();
+    expect(terminalNotice.error).toBeNull();
+    expect(terminalNotice.data).toBeNull();
+
     const empty = await profile("NoChallengeDelete");
     const emptyDeleted = await deleteMember(empty);
     expect(emptyDeleted.error).toBeNull();
@@ -830,7 +881,7 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
 
     const noticeBefore = await admin.from("transactional_notices")
       .select("recipient_member_id, inviter_member_id, recipient_email")
-      .eq("event_key", `invitation:${invitationId}:created`).single();
+      .eq("source_event_key", `invitation:${invitationId}:created`).single();
     expect(noticeBefore.error).toBeNull();
     expect(noticeBefore.data).toMatchObject({ recipient_member_id: invitee.id, inviter_member_id: inviter.id });
 
@@ -850,7 +901,7 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     expect(inviterView.data).toMatchObject({ invitedEmail: "Deleted Member", status: "revoked" });
     const noticeAfter = await admin.from("transactional_notices")
       .select("recipient_member_id, inviter_member_id, recipient_email, inviter_display_name")
-      .eq("event_key", `invitation:${invitationId}:created`).single();
+      .eq("source_event_key", `invitation:${invitationId}:created`).single();
     expect(noticeAfter.data).toMatchObject({
       recipient_member_id: deletedMemberId, inviter_member_id: inviter.id,
       recipient_email: expect.stringMatching(/^deleted\+[0-9a-f]+@invalid\.larp-code\.example$/),
