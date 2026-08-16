@@ -77,7 +77,7 @@ function SignedOut({
   snapshot: AppSnapshot;
   onRetry: () => void;
   authState: SignInState;
-  onAction: (request: PopupRequest) => Promise<void>;
+  onAction: (request: PopupRequest) => Promise<PopupResponse | undefined>;
 }) {
   const [isSignInFormVisible, setSignInFormVisible] = useState(false);
   const [codeEntryActive, setCodeEntryActive] = useState(false);
@@ -194,7 +194,7 @@ function AuthenticatedPlaceholder({
   onSignOut,
 }: {
   snapshot: AppSnapshot;
-  onSignOut: () => Promise<void>;
+  onSignOut: () => Promise<PopupResponse | undefined>;
 }) {
   return (
     <section className="state-card" aria-labelledby="placeholder-title">
@@ -215,7 +215,7 @@ function SetupRequired({
   error,
 }: {
   snapshot: Extract<AppSnapshot, { kind: "setup_required" }>;
-  onCreate: (request: PopupRequest) => Promise<void>;
+  onCreate: (request: PopupRequest) => Promise<PopupResponse | undefined>;
   error?: string;
 }) {
   const [displayName, setDisplayName] = useState("");
@@ -311,8 +311,8 @@ function MemberAccountView({
   commandOutcome,
 }: {
   snapshot: Extract<AppSnapshot, { kind: "account" }>;
-  onSignOut: () => Promise<void>;
-  onUpdate: (request: PopupRequest) => Promise<void>;
+  onSignOut: () => Promise<PopupResponse | undefined>;
+  onUpdate: (request: PopupRequest) => Promise<PopupResponse | undefined>;
   onRetry: () => void;
   commandOutcome?: CommandOutcome;
 }) {
@@ -469,9 +469,9 @@ function InvitationView({
   onAction,
 }: {
   snapshot: Extract<AppSnapshot, { kind: "invitation" }>;
-  onSignOut: () => Promise<void>;
-  onAccept: (request: PopupRequest) => Promise<void>;
-  onAction: (request: PopupRequest) => Promise<void>;
+  onSignOut: () => Promise<PopupResponse | undefined>;
+  onAccept: (request: PopupRequest) => Promise<PopupResponse | undefined>;
+  onAction: (request: PopupRequest) => Promise<PopupResponse | undefined>;
   commandOutcome?: CommandOutcome;
 }) {
   const { invitation } = snapshot;
@@ -560,8 +560,8 @@ function ChallengeTerms({ challenge }: { challenge: Extract<AppSnapshot, { kind:
 
 function ScheduledView({ snapshot, onSignOut, onCancel, commandOutcome }: {
   snapshot: Extract<AppSnapshot, { kind: "scheduled" }>;
-  onSignOut: () => Promise<void>;
-  onCancel: (request: PopupRequest) => Promise<void>;
+  onSignOut: () => Promise<PopupResponse | undefined>;
+  onCancel: (request: PopupRequest) => Promise<PopupResponse | undefined>;
   commandOutcome?: CommandOutcome;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -594,11 +594,11 @@ function ScheduledView({ snapshot, onSignOut, onCancel, commandOutcome }: {
 
 function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
   snapshot: Extract<AppSnapshot, { kind: "active" }>;
-  onSignOut: () => Promise<void>;
-  onAction: (request: PopupRequest) => Promise<void>;
+  onSignOut: () => Promise<PopupResponse | undefined>;
+  onAction: (request: PopupRequest) => Promise<PopupResponse | undefined>;
   commandOutcome?: CommandOutcome;
 }) {
-  const progress = snapshot.progress ?? snapshot.challenge.progress;
+  const progress = snapshot.progress;
   const [selectedProblemId, setSelectedProblemId] = useState("");
   const [affirmed, setAffirmed] = useState(false);
   const [isSubmitting, setSubmitting] = useState(false);
@@ -611,15 +611,17 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
     if (!progress || !selectedProblem || !affirmed || pending || isSubmitting) return;
     setSubmitting(true);
     try {
-      await onAction({
+      const response = await onAction({
         version: PROTOCOL_VERSION,
         type: "credit_solve",
         challengeId: snapshot.challenge.id,
         problemId: selectedProblem.id,
         affirmed: true,
       });
-      setSelectedProblemId("");
-      setAffirmed(false);
+      if (response?.ok && (!response.command || response.command.status === "applied")) {
+        setSelectedProblemId("");
+        setAffirmed(false);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -677,7 +679,7 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
   );
 }
 
-function TerminalChallengeView({ snapshot, onSignOut }: { snapshot: Extract<AppSnapshot, { kind: "terminal" }>; onSignOut: () => Promise<void> }) {
+function TerminalChallengeView({ snapshot, onSignOut }: { snapshot: Extract<AppSnapshot, { kind: "terminal" }>; onSignOut: () => Promise<PopupResponse | undefined> }) {
   return (
     <section className="state-card" aria-labelledby="terminal-title">
       <p className="eyebrow">CHALLENGE ENDED</p>
@@ -716,7 +718,7 @@ export function App() {
       });
   }, []);
 
-  const sendAuthAction = useCallback(async (request: PopupRequest) => {
+  const sendAuthAction = useCallback(async (request: PopupRequest): Promise<PopupResponse | undefined> => {
     if (request.type === "verify_email_otp") setAuthState({ status: "verifying" });
     if (request.type === "request_email_otp" || request.type === "resend_email_otp") {
       setAuthState({ status: "requesting_code" });
@@ -726,13 +728,14 @@ export function App() {
       || request.type === "accept_invitation"
       || request.type === "revoke_invitation"
       || request.type === "decline_invitation"
-      || request.type === "cancel_challenge") setCommandOutcome(undefined);
+      || request.type === "cancel_challenge"
+      || request.type === "credit_solve") setCommandOutcome(undefined);
     try {
       const response = await sendRequest(request);
       if (!response.ok) {
         if (response.error.code === "connection_unavailable") setAuthState({ status: "service_unavailable" });
         if (request.type === "create_member_account") setSetupError(response.error.message);
-        return;
+        return response;
       }
       if (response.auth) setAuthState(response.auth);
       if ("command" in response && response.command && !response.snapshot) {
@@ -755,12 +758,14 @@ export function App() {
             }
           : current);
       }
+      return response;
     } catch {
       if (request.type === "update_display_name"
         || request.type === "accept_invitation"
         || request.type === "revoke_invitation"
         || request.type === "decline_invitation"
-        || request.type === "cancel_challenge") {
+        || request.type === "cancel_challenge"
+        || request.type === "credit_solve") {
         setCommandOutcome(createUncertainCommandOutcome("pending-recovery"));
         void requestSnapshot().then((snapshot) => {
           setState({ status: "loaded", snapshot });
@@ -773,6 +778,7 @@ export function App() {
       }
       setAuthState({ status: "service_unavailable" });
       if (request.type === "create_member_account") setSetupError("The larp-code connection is unavailable.");
+      return undefined;
     }
   }, []);
 

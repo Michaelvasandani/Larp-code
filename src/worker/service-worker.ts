@@ -328,6 +328,7 @@ function startRealtime(): void {
     .on("postgres_changes", { event: "*", schema: "public", table: "solves" }, realtimeInvalidation.invalidate)
     .on("postgres_changes", { event: "*", schema: "public", table: "challenges" }, realtimeInvalidation.invalidate)
     .subscribe((status) => {
+      if (status === "SUBSCRIBED") realtimeInvalidation.invalidate();
       const mapped = status === "SUBSCRIBED" ? "subscribed" : status === "CHANNEL_ERROR" ? "error" : status === "CLOSED" ? "closed" : "connecting";
       broadcastWorkerEvent({ version: PROTOCOL_VERSION, type: "realtime_status", status: mapped });
     });

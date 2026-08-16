@@ -91,7 +91,7 @@ function paceCopy(status: PaceStatus, amount: number, ahead: number, priorGap: n
     return `Behind by ${priorGap} to the prior target; ${amount} more needed for today's target.`;
   }
   if (status === "on_pace_today") return `${amount} more needed for today's target.`;
-  return ahead > 0 ? `Today's pace met; ${ahead} ahead of the target.` : "Today's pace met.";
+  return ahead > 0 ? `Today's pace met; ${ahead} ahead of the target.` : "Today's pace met; 0 at the target.";
 }
 
 /** Derives a Member's recoverable cumulative relationship to today's targets. */
@@ -181,9 +181,3 @@ export function deriveActiveProgress(input: ChallengeSchedule & Readonly<{
     })),
   });
 }
-
-// Kept as named aliases for callers that describe the domain formula directly.
-export const expectedProgress = calculateExpectedProgress;
-export const pairProgress = calculatePairProgress;
-export const petCondition = calculatePetCondition;
-export const evolutionStage = calculateEvolutionStage;

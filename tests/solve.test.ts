@@ -71,4 +71,25 @@ describe("recoverable Challenge Solve seam", () => {
     await expect(adapter.createSolve({ challengeId: "challenge-1", problemId: "problem:0001-two-sum", affirmed: true }, identity))
       .resolves.toMatchObject({ status: "rejected", kind: CREATE_SOLVE_COMMAND_KIND, code: "validation" });
   });
+
+  it("keeps the uncertain command key and refuses a new Problem until recovery", async () => {
+    const storage = storageWith();
+    let calls = 0;
+    const adapter = createSolveCommandAdapter({
+      storage,
+      randomIdempotencyKey: () => "first-key",
+      rpc: {
+        async createSolve() {
+          calls += 1;
+          throw new Error("transport timeout");
+        },
+      },
+    });
+    await expect(adapter.createSolve({ challengeId: "challenge-1", problemId: "problem:0001-two-sum", affirmed: true }, identity))
+      .resolves.toMatchObject({ status: "uncertain", idempotencyKey: "first-key" });
+    await expect(adapter.createSolve({ challengeId: "challenge-1", problemId: "problem:0002-add-two-numbers", affirmed: true }, identity))
+      .resolves.toMatchObject({ status: "uncertain", idempotencyKey: "first-key" });
+    expect(calls).toBe(1);
+    expect(await adapter.readPending()).toMatchObject({ idempotencyKey: "first-key", intent: { problemId: "problem:0001-two-sum" } });
+  });
 });

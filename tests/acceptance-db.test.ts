@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it } from "vitest";
 
+import { PINNED_PROBLEM_SET_VERSION } from "../src/catalog/problem-set";
+
 // Supabase initializes its Realtime transport even though this test only uses
 // REST/RPC. Node 20 has no native WebSocket; a never-used constructor keeps
 // the integration test runnable on the repository's supported test runtime.
@@ -370,6 +372,129 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
       p_problem_id: "problem:0242-valid-anagram", p_affirmed: true,
     });
     expect(afterDeadline.error?.code).toBe("P0003");
+  });
+
+  it("covers controlled-time pace, carry, fractional Pair Progress, Pet bands, and evolution high-water marks", async () => {
+    admin = createClient(credentials!.url, credentials!.serviceKey);
+    const inviter = await profile("ControlledInviter");
+    const invitee = await profile("ControlledInvitee");
+    const version = "neetcode-150-2026-08-15";
+    const controlledNow = "2030-01-03T12:00:00.000Z";
+    type ControlledSnapshot = {
+      status: string;
+      progress?: {
+        day: number;
+        expectedProgress: number;
+        previousExpectedProgress: number;
+        earlierExpectedProgress: number;
+        pairProgress: number;
+        petCondition: string;
+        currentEvolutionStage: number;
+        highestEvolutionStage: number;
+        members: Array<{ paceStatus: string; paceGap: { copy: string } }>;
+      };
+    };
+    const problemIds = PINNED_PROBLEM_SET_VERSION.problems.map((problem) => problem.id);
+    expect(problemIds).toHaveLength(150);
+
+    async function seededChallenge(startDate: string, deadlineDate: string): Promise<string> {
+      const invitation = await admin.from("invitations").insert({
+        inviter_id: inviter.id,
+        invited_email: invitee.email,
+        challenge_time_zone: "UTC",
+        start_date: startDate,
+        deadline_date: deadlineDate,
+        problem_set_version_id: version,
+        status: "accepted",
+      }).select("id").single();
+      expect(invitation.error).toBeNull();
+      const challenge = await admin.from("challenges").insert({
+        invitation_id: invitation.data!.id,
+        inviter_id: inviter.id,
+        invited_member_id: invitee.id,
+        challenge_time_zone: "UTC",
+        start_date: startDate,
+        deadline_date: deadlineDate,
+        problem_set_version_id: version,
+        status: "scheduled",
+      }).select("id").single();
+      expect(challenge.error).toBeNull();
+      const members = await admin.from("challenge_members").insert([
+        { challenge_id: challenge.data!.id, member_id: inviter.id, member_email: inviter.email, display_name: "ControlledInviter" },
+        { challenge_id: challenge.data!.id, member_id: invitee.id, member_email: invitee.email, display_name: "ControlledInvitee" },
+      ]);
+      expect(members.error).toBeNull();
+      return challenge.data!.id as string;
+    }
+
+    async function addSolves(challengeId: string, member: Profile, start: number, count: number): Promise<void> {
+      const rows = problemIds.slice(start, start + count).map((problemId) => ({
+        member_id: member.id,
+        challenge_id: challengeId,
+        problem_id: problemId,
+      }));
+      if (rows.length === 0) return;
+      const inserted = await admin.from("solves").insert(rows);
+      expect(inserted.error).toBeNull();
+    }
+
+    async function readAt(challengeId: string, authoritativeNow: string): Promise<ControlledSnapshot> {
+      const result = await inviter.client.rpc("get_challenge_at_v1", {
+        p_challenge_id: challengeId,
+        p_authoritative_now: authoritativeNow,
+      });
+      expect(result.error).toBeNull();
+      return result.data as ControlledSnapshot;
+    }
+
+    function progressOf(snapshot: ControlledSnapshot): NonNullable<ControlledSnapshot["progress"]> {
+      if (!snapshot.progress) throw new Error("Controlled-time read did not return progress.");
+      return snapshot.progress;
+    }
+
+    const bandsChallenge = await seededChallenge("2030-01-01", "2030-01-03");
+    let snapshot = await readAt(bandsChallenge, controlledNow);
+    expect(snapshot).toMatchObject({ status: "active", progress: {
+      day: 3, expectedProgress: 150, previousExpectedProgress: 100, earlierExpectedProgress: 50,
+      pairProgress: 0, petCondition: "deteriorated", currentEvolutionStage: 1, highestEvolutionStage: 1,
+    }});
+    await addSolves(bandsChallenge, inviter, 0, 7);
+    await addSolves(bandsChallenge, invitee, 0, 8);
+    snapshot = await readAt(bandsChallenge, controlledNow);
+    expect(progressOf(snapshot).pairProgress).toBe(7.5);
+    expect(progressOf(snapshot).petCondition).toBe("deteriorated");
+    await addSolves(bandsChallenge, inviter, 7, 43);
+    await addSolves(bandsChallenge, invitee, 8, 42);
+    snapshot = await readAt(bandsChallenge, controlledNow);
+    expect(progressOf(snapshot)).toMatchObject({ pairProgress: 50, petCondition: "sad", currentEvolutionStage: 2, highestEvolutionStage: 2 });
+    await addSolves(bandsChallenge, inviter, 50, 50);
+    await addSolves(bandsChallenge, invitee, 50, 50);
+    snapshot = await readAt(bandsChallenge, controlledNow);
+    expect(progressOf(snapshot)).toMatchObject({ pairProgress: 100, petCondition: "hungry", currentEvolutionStage: 3, highestEvolutionStage: 3 });
+    expect(progressOf(snapshot).members.every((member) => member.paceStatus === "on_pace_today")).toBe(true);
+    await addSolves(bandsChallenge, inviter, 100, 50);
+    await addSolves(bandsChallenge, invitee, 100, 50);
+    snapshot = await readAt(bandsChallenge, controlledNow);
+    expect(progressOf(snapshot)).toMatchObject({ pairProgress: 150, petCondition: "healthy", currentEvolutionStage: 4, highestEvolutionStage: 4 });
+    expect(progressOf(snapshot).members.map((member) => member.paceGap.copy)).toEqual([
+      "Today's pace met; 0 at the target.",
+      "Today's pace met; 0 at the target.",
+    ]);
+
+    const carryChallenge = await seededChallenge("2030-01-02", "2030-01-04");
+    await addSolves(carryChallenge, inviter, 0, 101);
+    await addSolves(carryChallenge, invitee, 0, 100);
+    const carrySnapshot = await readAt(carryChallenge, controlledNow);
+    expect(progressOf(carrySnapshot)).toMatchObject({ day: 2, expectedProgress: 100, previousExpectedProgress: 50, pairProgress: 100.5, petCondition: "healthy" });
+    expect(progressOf(carrySnapshot).members.map((member) => member.paceGap.copy).sort()).toEqual([
+      "Today's pace met; 0 at the target.",
+      "Today's pace met; 1 ahead of the target.",
+    ]);
+
+    const beforeStart = await readAt(bandsChallenge, "2029-12-31T23:59:59.000Z");
+    expect(beforeStart).not.toHaveProperty("progress");
+    const afterDeadline = await readAt(bandsChallenge, "2030-01-04T00:00:00.000Z");
+    expect(afterDeadline).toMatchObject({ status: "active", progress: { day: 4, expectedProgress: 150, pairProgress: 150 } });
   });
 });
 

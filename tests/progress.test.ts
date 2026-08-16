@@ -42,6 +42,7 @@ describe("authoritative progress and Pet seam", () => {
     expect(calculatePace(10, 5, 10)).toMatchObject({
       status: "todays_pace_met",
       amountAhead: 0,
+      copy: "Today's pace met; 0 at the target.",
     });
     expect(calculatePace(12, 5, 10)).toMatchObject({
       status: "todays_pace_met",

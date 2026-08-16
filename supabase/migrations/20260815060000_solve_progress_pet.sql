@@ -55,10 +55,30 @@ returns jsonb language sql immutable set search_path = '' as $$
   );
 $$;
 
-create or replace function public.challenge_progress_json_v1(challenge_row public.challenges)
+create or replace function public.challenge_member_totals_v1(p_challenge_id uuid)
+returns table(member_id uuid, email text, display_name text, member_total integer)
+language sql stable security definer set search_path = '' as $$
+  select member_row.member_id,
+    member_row.member_email,
+    member_row.display_name,
+    count(solve_row.id)::integer
+  from public.challenge_members member_row
+  left join public.solves solve_row
+    on solve_row.challenge_id = p_challenge_id
+   and solve_row.member_id = member_row.member_id
+   and solve_row.credit_status = 'credited'
+  where member_row.challenge_id = p_challenge_id
+  group by member_row.member_id, member_row.member_email, member_row.display_name
+  order by member_row.member_id;
+$$;
+
+create or replace function public.challenge_progress_json_v1(
+  challenge_row public.challenges,
+  p_authoritative_now timestamptz default clock_timestamp()
+)
 returns jsonb language plpgsql volatile set search_path = '' as $$
 declare
-  local_date date := (clock_timestamp() at time zone challenge_row.challenge_time_zone)::date;
+  local_date date := (p_authoritative_now at time zone challenge_row.challenge_time_zone)::date;
   duration_days integer := challenge_row.deadline_date - challenge_row.start_date + 1;
   day_number integer;
   current_target integer;
@@ -91,17 +111,8 @@ begin
   end;
   -- Keep the calculation in one function so clients cannot treat event
   -- payloads or a partial member query as authoritative.
-  select coalesce(sum(member_total), 0) / 2.0 into pair_progress
-    from (
-      select member_row.member_id, count(solve_row.id)::numeric as member_total
-        from public.challenge_members member_row
-        left join public.solves solve_row
-          on solve_row.challenge_id = challenge_row.id
-         and solve_row.member_id = member_row.member_id
-         and solve_row.credit_status = 'credited'
-       where member_row.challenge_id = challenge_row.id
-       group by member_row.member_id
-    ) totals;
+  select coalesce(sum(totals.member_total), 0) / 2.0 into pair_progress
+    from public.challenge_member_totals_v1(challenge_row.id) totals;
   pet_condition := case
     when pair_progress >= current_target then 'healthy'
     when pair_progress >= previous_target then 'hungry'
@@ -140,22 +151,11 @@ begin
             (current_target - totals.member_total) || ' more needed for today''s target.'
           when totals.member_total > current_target then
             'Today''s pace met; ' || (totals.member_total - current_target) || ' ahead of the target.'
-          else 'Today''s pace met.'
+          else 'Today''s pace met; 0 at the target.'
         end
       )
     ) order by totals.member_id)
-    from (
-      select member_row.member_id, member_row.member_email as email,
-        member_row.display_name,
-        count(solve_row.id)::integer as member_total
-        from public.challenge_members member_row
-        left join public.solves solve_row
-          on solve_row.challenge_id = challenge_row.id
-         and solve_row.member_id = member_row.member_id
-         and solve_row.credit_status = 'credited'
-       where member_row.challenge_id = challenge_row.id
-       group by member_row.member_id, member_row.member_email, member_row.display_name
-    ) totals
+    from public.challenge_member_totals_v1(challenge_row.id) totals
   ), '[]'::jsonb);
   return jsonb_build_object(
     'problemSetVersionId', challenge_row.problem_set_version_id,
@@ -171,6 +171,43 @@ begin
     'members', member_rows
   );
 end;
+$$;
+
+-- Controlled-time read seam for acceptance tests and operational diagnostics.
+-- Production Snapshot reads use challenge_json_v1(), which supplies the server
+-- clock default; neither path permits a client to calculate progress locally.
+create or replace function public.get_challenge_at_v1(
+  p_challenge_id uuid,
+  p_authoritative_now timestamptz
+)
+returns jsonb language sql stable security definer set search_path = '' as $$
+  select public.challenge_json_v1(challenge_row)
+    || jsonb_build_object(
+      'status', public.challenge_effective_status_at_v1(
+        challenge_row.status,
+        challenge_row.start_date,
+        challenge_row.challenge_time_zone,
+        p_authoritative_now
+      ),
+      'progress', case when public.challenge_effective_status_at_v1(
+        challenge_row.status,
+        challenge_row.start_date,
+        challenge_row.challenge_time_zone,
+        p_authoritative_now
+      ) = 'active' then public.challenge_progress_json_v1(challenge_row, p_authoritative_now) else null end
+    )
+    - case when public.challenge_effective_status_at_v1(
+      challenge_row.status,
+      challenge_row.start_date,
+      challenge_row.challenge_time_zone,
+      p_authoritative_now
+    ) = 'active' then array[]::text[] else array['progress'] end
+    from public.challenges challenge_row
+   where challenge_row.id = p_challenge_id
+     and exists (
+       select 1 from public.challenge_members member_row
+        where member_row.challenge_id = challenge_row.id and member_row.member_id = (select auth.uid())
+     );
 $$;
 
 create or replace function public.challenge_json_v1(challenge_row public.challenges)
@@ -300,17 +337,8 @@ begin
   insert into public.solves(member_id, challenge_id, problem_id, claimed_at)
     values (current_member, challenge_row.id, p_problem_id, authoritative_now)
     returning * into solve_row;
-  select coalesce(sum(member_total), 0) / 2.0 into pair_progress
-    from (
-      select member_row.member_id, count(solve_item.id)::numeric as member_total
-        from public.challenge_members member_row
-        left join public.solves solve_item
-          on solve_item.challenge_id = challenge_row.id
-         and solve_item.member_id = member_row.member_id
-         and solve_item.credit_status = 'credited'
-       where member_row.challenge_id = challenge_row.id
-       group by member_row.member_id
-    ) totals;
+  select coalesce(sum(totals.member_total), 0) / 2.0 into pair_progress
+    from public.challenge_member_totals_v1(challenge_row.id) totals;
   attained_stage := case when pair_progress >= 150 then 4 when pair_progress >= 100 then 3 when pair_progress >= 50 then 2 else 1 end;
   update public.challenges
      set highest_evolution_stage = greatest(highest_evolution_stage, attained_stage), updated_at = authoritative_now
@@ -326,9 +354,12 @@ end;
 $$;
 
 revoke all on function public.solve_json_v1(public.solves) from public;
-revoke all on function public.challenge_progress_json_v1(public.challenges) from public;
+revoke all on function public.challenge_member_totals_v1(uuid) from public;
+revoke all on function public.challenge_progress_json_v1(public.challenges, timestamptz) from public;
+revoke all on function public.get_challenge_at_v1(uuid, timestamptz) from public;
 revoke all on function public.create_solve_v1(uuid, integer, text, uuid, text, uuid, text, boolean) from public;
 grant execute on function public.create_solve_v1(uuid, integer, text, uuid, text, uuid, text, boolean) to authenticated;
+grant execute on function public.get_challenge_at_v1(uuid, timestamptz) to authenticated;
 
 -- Relevant changes are invalidation signals only; the worker always refetches
 -- the complete Active Snapshot after a debounced event.
