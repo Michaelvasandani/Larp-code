@@ -224,12 +224,91 @@ function classifyFailure(error: unknown): { code: "unauthorized" | "validation" 
   return null;
 }
 
-function sameTerms(pending: Extract<PendingCommand, { kind: "create_invitation" }>, intent: InvitationCommandIntent): boolean {
-  return pending.intent.invitedEmail === intent.invitedEmail
-    && pending.intent.timeZone === intent.timeZone
-    && pending.intent.startDate === intent.startDate
-    && pending.intent.deadlineDate === intent.deadlineDate
-    && pending.intent.problemSetVersionId === intent.problemSetVersionId;
+type InvitationTransactionKind = typeof INVITATION_COMMAND_KIND | typeof REVOKE_INVITATION_COMMAND_KIND | typeof DECLINE_INVITATION_COMMAND_KIND;
+type InvitationTransactionOutcome =
+  | { status: "applied"; idempotencyKey: string; invitation: InvitationRecord }
+  | { status: "rejected"; code: "unauthorized" | "validation" | "rate_limited"; message: string }
+  | { status: "uncertain"; kind: InvitationTransactionKind; idempotencyKey: string; message: "Checking whether this completed." };
+
+function sameIntent(left: PendingCommand, kind: InvitationTransactionKind, intent: InvitationCommandIntent | InvitationTerminalCommandIntent): boolean {
+  if (left.kind !== kind) return false;
+  if (kind === INVITATION_COMMAND_KIND) {
+    const previous = left.intent as InvitationCommandIntent;
+    const next = intent as InvitationCommandIntent;
+    return previous.invitedEmail === next.invitedEmail
+      && previous.timeZone === next.timeZone
+      && previous.startDate === next.startDate
+      && previous.deadlineDate === next.deadlineDate
+      && previous.problemSetVersionId === next.problemSetVersionId;
+  }
+  return (left.intent as InvitationTerminalCommandIntent).invitationId
+    === (intent as InvitationTerminalCommandIntent).invitationId;
+}
+
+function createDurableInvitationCommandRunner({
+  storage,
+  send,
+  now = () => new Date().toISOString(),
+  randomIdempotencyKey = () => crypto.randomUUID(),
+}: {
+  storage: InvitationPendingStorage;
+  send: (pending: PendingCommand, clear: (key: string) => Promise<void>) => Promise<InvitationTransactionOutcome>;
+  now?: () => string;
+  randomIdempotencyKey?: () => string;
+}) {
+  const pendingStore = createPendingCommandStore(storage);
+
+  async function invoke(
+    kind: InvitationTransactionKind,
+    intent: InvitationCommandIntent | InvitationTerminalCommandIntent,
+    identity: CommandIdentity,
+  ): Promise<InvitationTransactionOutcome> {
+    const existing = await pendingStore.read();
+    if (existing) {
+      if (!sameIdentity(existing, identity)) {
+        await pendingStore.clear(existing.idempotencyKey);
+      } else if (!sameIntent(existing, kind, intent)) {
+        return { status: "uncertain", kind, idempotencyKey: existing.idempotencyKey, message: "Checking whether this completed." };
+      } else {
+        return send(existing, pendingStore.clear);
+      }
+    }
+    const pending: PendingCommand = kind === INVITATION_COMMAND_KIND
+      ? {
+          version: TRANSACTION_COMMAND_VERSION,
+          kind: INVITATION_COMMAND_KIND,
+          idempotencyKey: randomIdempotencyKey(),
+          memberId: identity.memberId,
+          memberEmail: identity.memberEmail.trim().toLowerCase(),
+          intent: intent as InvitationCommandIntent,
+          requestedAt: now(),
+        }
+      : {
+          version: TRANSACTION_COMMAND_VERSION,
+          kind: kind as typeof REVOKE_INVITATION_COMMAND_KIND | typeof DECLINE_INVITATION_COMMAND_KIND,
+          idempotencyKey: randomIdempotencyKey(),
+          memberId: identity.memberId,
+          memberEmail: identity.memberEmail.trim().toLowerCase(),
+          intent: intent as InvitationTerminalCommandIntent,
+          requestedAt: now(),
+        };
+    await pendingStore.persist(pending);
+    return send(pending, pendingStore.clear);
+  }
+
+  async function recover(identity: CommandIdentity): Promise<InvitationTransactionOutcome | null> {
+    const pending = await pendingStore.read();
+    if (!pending || (pending.kind !== INVITATION_COMMAND_KIND
+      && pending.kind !== REVOKE_INVITATION_COMMAND_KIND
+      && pending.kind !== DECLINE_INVITATION_COMMAND_KIND)) return null;
+    if (!sameIdentity(pending, identity)) {
+      await pendingStore.clear(pending.idempotencyKey);
+      return null;
+    }
+    return send(pending, pendingStore.clear);
+  }
+
+  return { invoke, recover, readPending: pendingStore.read };
 }
 
 export function createInvitationCommandAdapter({
@@ -243,40 +322,38 @@ export function createInvitationCommandAdapter({
   now?: () => string;
   randomIdempotencyKey?: () => string;
 }) {
-  const pendingStore = createPendingCommandStore(storage);
-
-  async function send(pending: PendingCommand): Promise<InvitationCommandResult> {
-    if (pending.kind !== INVITATION_COMMAND_KIND) {
-      return { status: "uncertain", kind: INVITATION_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
-    }
-    const { invitedEmail, timeZone, startDate, deadlineDate, problemSetVersionId } = pending.intent;
-    try {
-      const invitation = await rpc.createInvitation({
-        idempotencyKey: pending.idempotencyKey,
-        commandVersion: INVITATION_COMMAND_VERSION,
-        commandKind: INVITATION_COMMAND_KIND,
-        memberId: pending.memberId,
-        memberEmail: pending.memberEmail,
-        terms: {
-          invitedEmail,
-          timeZone,
-          startDate,
-          deadlineDate,
-        },
-        problemSetVersionId,
-      });
-      await rpc.dispatchInvitationNotice?.(invitation.id);
-      await pendingStore.clear(pending.idempotencyKey);
-      return { status: "applied", idempotencyKey: pending.idempotencyKey, invitation };
-    } catch (error) {
-      const known = classifyFailure(error);
-      if (known) {
-        await pendingStore.clear(pending.idempotencyKey);
-        return { status: "rejected", ...known };
+  const runner = createDurableInvitationCommandRunner({
+    storage,
+    now,
+    randomIdempotencyKey,
+    send: async (pending, clear) => {
+      if (pending.kind !== INVITATION_COMMAND_KIND) {
+        return { status: "uncertain", kind: INVITATION_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
       }
-      return { status: "uncertain", kind: INVITATION_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
-    }
-  }
+      const { invitedEmail, timeZone, startDate, deadlineDate, problemSetVersionId } = pending.intent;
+      try {
+        const invitation = await rpc.createInvitation({
+          idempotencyKey: pending.idempotencyKey,
+          commandVersion: INVITATION_COMMAND_VERSION,
+          commandKind: INVITATION_COMMAND_KIND,
+          memberId: pending.memberId,
+          memberEmail: pending.memberEmail,
+          terms: { invitedEmail, timeZone, startDate, deadlineDate },
+          problemSetVersionId,
+        });
+        await rpc.dispatchInvitationNotice?.(invitation.id);
+        await clear(pending.idempotencyKey);
+        return { status: "applied", idempotencyKey: pending.idempotencyKey, invitation };
+      } catch (error) {
+        const known = classifyFailure(error);
+        if (known) {
+          await clear(pending.idempotencyKey);
+          return { status: "rejected", ...known };
+        }
+        return { status: "uncertain", kind: INVITATION_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+      }
+    },
+  });
 
   async function createInvitation(
     input: InvitationTermsInput,
@@ -286,49 +363,19 @@ export function createInvitationCommandAdapter({
   ): Promise<InvitationCommandResult> {
     const normalized = normalizeInvitationTerms(input, authoritativeNow);
     if ("error" in normalized) return { status: "rejected", code: "validation", message: normalized.error };
-    const existing = await pendingStore.read();
-    if (existing) {
-      if (!sameIdentity(existing, identity)) {
-        await pendingStore.clear(existing.idempotencyKey);
-      } else if (existing.kind !== INVITATION_COMMAND_KIND || !sameTerms(existing, {
-        ...normalized.value,
-        problemSetVersionId,
-      })) {
-        return { status: "uncertain", kind: INVITATION_COMMAND_KIND, idempotencyKey: existing.idempotencyKey, message: "Checking whether this completed." };
-      } else {
-        return send(existing);
-      }
-    }
-    const pending = {
-      version: INVITATION_COMMAND_VERSION,
-      kind: INVITATION_COMMAND_KIND,
-      idempotencyKey: randomIdempotencyKey(),
-      memberId: identity.memberId,
-      memberEmail: identity.memberEmail.trim().toLowerCase(),
-      intent: {
-        invitedEmail: normalized.value.invitedEmail,
-        timeZone: normalized.value.timeZone,
-        startDate: normalized.value.startDate,
-        deadlineDate: normalized.value.deadlineDate,
-        problemSetVersionId,
-      },
-      requestedAt: now(),
-    } satisfies PendingCommand;
-    await pendingStore.persist(pending);
-    return send(pending);
+    return runner.invoke(INVITATION_COMMAND_KIND, {
+      ...normalized.value,
+      problemSetVersionId,
+    }, identity) as Promise<InvitationCommandResult>;
   }
 
   async function recover(identity: CommandIdentity): Promise<InvitationCommandResult | null> {
-    const pending = await pendingStore.read();
+    const pending = await runner.readPending();
     if (!pending || pending.kind !== INVITATION_COMMAND_KIND) return null;
-    if (!sameIdentity(pending, identity)) {
-      await pendingStore.clear(pending.idempotencyKey);
-      return null;
-    }
-    return send(pending);
+    return runner.recover(identity) as Promise<InvitationCommandResult | null>;
   }
 
-  return { createInvitation, recover, readPending: pendingStore.read };
+  return { createInvitation, recover, readPending: runner.readPending };
 }
 
 /**
@@ -347,54 +394,43 @@ export function createInvitationTerminalCommandAdapter({
   now?: () => string;
   randomIdempotencyKey?: () => string;
 }) {
-  const pendingStore = createPendingCommandStore(storage);
-
-  async function send(pending: PendingCommand): Promise<InvitationTerminalCommandResult> {
-    if (pending.kind !== REVOKE_INVITATION_COMMAND_KIND && pending.kind !== DECLINE_INVITATION_COMMAND_KIND) {
-      return {
-        status: "uncertain",
-        kind: REVOKE_INVITATION_COMMAND_KIND,
-        idempotencyKey: pending.idempotencyKey,
-        message: "Checking whether this completed.",
-      };
-    }
-    const input: InvitationTerminalRpcInput = {
-      idempotencyKey: pending.idempotencyKey,
-      commandVersion: INVITATION_COMMAND_VERSION,
-      commandKind: pending.kind,
-      memberId: pending.memberId,
-      memberEmail: pending.memberEmail,
-      invitationId: pending.intent.invitationId,
-    };
-    try {
-      let invitation: InvitationRecord;
-      if (pending.kind === REVOKE_INVITATION_COMMAND_KIND) {
-        if (!rpc.revokeInvitation) return { status: "rejected", code: "validation", message: "Invitation action is unavailable." };
-        invitation = await rpc.revokeInvitation(
-          input as InvitationTerminalRpcInput & { commandKind: typeof REVOKE_INVITATION_COMMAND_KIND },
-        );
-      } else {
-        if (!rpc.declineInvitation) return { status: "rejected", code: "validation", message: "Invitation action is unavailable." };
-        invitation = await rpc.declineInvitation(
-          input as InvitationTerminalRpcInput & { commandKind: typeof DECLINE_INVITATION_COMMAND_KIND },
-        );
+  const runner = createDurableInvitationCommandRunner({
+    storage,
+    now,
+    randomIdempotencyKey,
+    send: async (pending, clear) => {
+      if (pending.kind !== REVOKE_INVITATION_COMMAND_KIND && pending.kind !== DECLINE_INVITATION_COMMAND_KIND) {
+        return { status: "uncertain", kind: REVOKE_INVITATION_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
       }
-      await pendingStore.clear(pending.idempotencyKey);
-      return { status: "applied", idempotencyKey: pending.idempotencyKey, invitation };
-    } catch (error) {
-      const known = classifyFailure(error);
-      if (known) {
-        await pendingStore.clear(pending.idempotencyKey);
-        return { status: "rejected", ...known };
-      }
-      return {
-        status: "uncertain",
-        kind: pending.kind,
+      const input: InvitationTerminalRpcInput = {
         idempotencyKey: pending.idempotencyKey,
-        message: "Checking whether this completed.",
+        commandVersion: INVITATION_COMMAND_VERSION,
+        commandKind: pending.kind,
+        memberId: pending.memberId,
+        memberEmail: pending.memberEmail,
+        invitationId: pending.intent.invitationId,
       };
-    }
-  }
+      try {
+        let invitation: InvitationRecord;
+        if (pending.kind === REVOKE_INVITATION_COMMAND_KIND) {
+          if (!rpc.revokeInvitation) return { status: "rejected", code: "validation", message: "Invitation action is unavailable." };
+          invitation = await rpc.revokeInvitation(input as InvitationTerminalRpcInput & { commandKind: typeof REVOKE_INVITATION_COMMAND_KIND });
+        } else {
+          if (!rpc.declineInvitation) return { status: "rejected", code: "validation", message: "Invitation action is unavailable." };
+          invitation = await rpc.declineInvitation(input as InvitationTerminalRpcInput & { commandKind: typeof DECLINE_INVITATION_COMMAND_KIND });
+        }
+        await clear(pending.idempotencyKey);
+        return { status: "applied", idempotencyKey: pending.idempotencyKey, invitation };
+      } catch (error) {
+        const known = classifyFailure(error);
+        if (known) {
+          await clear(pending.idempotencyKey);
+          return { status: "rejected", ...known };
+        }
+        return { status: "uncertain", kind: pending.kind, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+      }
+    },
+  });
 
   async function invoke(
     kind: typeof REVOKE_INVITATION_COMMAND_KIND | typeof DECLINE_INVITATION_COMMAND_KIND,
@@ -403,33 +439,7 @@ export function createInvitationTerminalCommandAdapter({
   ): Promise<InvitationTerminalCommandResult> {
     const cleanInvitationId = invitationId.trim();
     if (!cleanInvitationId) return { status: "rejected", code: "validation", message: "Invitation is required." };
-    const existing = await pendingStore.read();
-    const intent: InvitationTerminalCommandIntent = { invitationId: cleanInvitationId };
-    if (existing) {
-      if (!sameIdentity(existing, identity)) {
-        await pendingStore.clear(existing.idempotencyKey);
-      } else if (existing.kind !== kind || existing.intent.invitationId !== intent.invitationId) {
-        return {
-          status: "uncertain",
-          kind,
-          idempotencyKey: existing.idempotencyKey,
-          message: "Checking whether this completed.",
-        };
-      } else {
-        return send(existing);
-      }
-    }
-    const pending = {
-      version: INVITATION_COMMAND_VERSION,
-      kind,
-      idempotencyKey: randomIdempotencyKey(),
-      memberId: identity.memberId,
-      memberEmail: identity.memberEmail.trim().toLowerCase(),
-      intent,
-      requestedAt: now(),
-    } satisfies PendingCommand;
-    await pendingStore.persist(pending);
-    return send(pending);
+    return runner.invoke(kind, { invitationId: cleanInvitationId }, identity) as Promise<InvitationTerminalCommandResult>;
   }
 
   async function revokeInvitation(invitationId: string, identity: CommandIdentity): Promise<InvitationTerminalCommandResult> {
@@ -441,43 +451,15 @@ export function createInvitationTerminalCommandAdapter({
   }
 
   async function recover(identity: CommandIdentity): Promise<InvitationTerminalCommandResult | null> {
-    const pending = await pendingStore.read();
+    const pending = await runner.readPending();
     if (!pending || (pending.kind !== REVOKE_INVITATION_COMMAND_KIND && pending.kind !== DECLINE_INVITATION_COMMAND_KIND)) return null;
-    if (!sameIdentity(pending, identity)) {
-      await pendingStore.clear(pending.idempotencyKey);
-      return null;
-    }
-    return send(pending);
+    return runner.recover(identity) as Promise<InvitationTerminalCommandResult | null>;
   }
 
   return {
     revokeInvitation,
     declineInvitation,
     recover,
-    readPending: pendingStore.read,
+    readPending: runner.readPending,
   };
-}
-
-export function createRevokeInvitationCommandAdapter(config: Omit<Parameters<typeof createInvitationTerminalCommandAdapter>[0], "rpc"> & {
-  rpc: Pick<InvitationTerminalRpc, "revokeInvitation">;
-}) {
-  return createInvitationTerminalCommandAdapter({
-    ...config,
-    rpc: {
-      revokeInvitation: config.rpc.revokeInvitation,
-      declineInvitation: async () => { throw { status: 422, message: "Decline is not available for this command." }; },
-    },
-  });
-}
-
-export function createDeclineInvitationCommandAdapter(config: Omit<Parameters<typeof createInvitationTerminalCommandAdapter>[0], "rpc"> & {
-  rpc: Pick<InvitationTerminalRpc, "declineInvitation">;
-}) {
-  return createInvitationTerminalCommandAdapter({
-    ...config,
-    rpc: {
-      revokeInvitation: async () => { throw { status: 422, message: "Revoke is not available for this command." }; },
-      declineInvitation: config.rpc.declineInvitation,
-    },
-  });
 }

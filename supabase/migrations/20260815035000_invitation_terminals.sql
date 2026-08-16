@@ -2,7 +2,9 @@
 -- and independent of scheduled reconciliation timing.
 
 alter table public.invitations
-  add column terminal_actor_id uuid references auth.users(id),
+  -- Keep the immutable actor identifier even if a later account deletion
+  -- replaces that Member Account; terminal records must remain readable.
+  add column terminal_actor_id uuid,
   add column terminal_at timestamptz;
 
 alter table public.invitations
@@ -27,6 +29,9 @@ begin
       is distinct from row(OLD.status, OLD.terminal_actor_id, OLD.terminal_at) then
       raise exception 'Invitation terminals cannot be reactivated.' using errcode = '22023';
     end if;
+  elsif OLD.status = 'pending' and NEW.status = 'accepted'
+    and clock_timestamp() >= (OLD.start_date::timestamp at time zone OLD.challenge_time_zone) then
+    raise exception 'The Invitation has expired because its Start Date has begun.' using errcode = 'P0003';
   elsif NEW.status is distinct from OLD.status
     and NEW.status not in ('accepted', 'revoked', 'declined', 'expired') then
     raise exception 'Invitation state transition is invalid.' using errcode = '22023';
@@ -39,14 +44,29 @@ create trigger invitations_terminal_transition
 before update on public.invitations
 for each row execute function public.enforce_invitation_terminal_transition_v1();
 
+create or replace function public.invitation_effective_status_at_v1(
+  p_status text,
+  p_start_date date,
+  p_challenge_time_zone text,
+  p_authoritative_now timestamptz
+)
+returns text language sql immutable set search_path = '' as $$
+  select case
+    when p_status = 'pending'
+      and ((p_authoritative_now at time zone p_challenge_time_zone)::date >= p_start_date)
+      then 'expired'
+    else p_status
+  end;
+$$;
+
 create or replace function public.invitation_effective_status_v1(invitation_row public.invitations)
 returns text language sql volatile set search_path = '' as $$
-  select case
-    when invitation_row.status = 'pending'
-      and ((clock_timestamp() at time zone invitation_row.challenge_time_zone)::date >= invitation_row.start_date)
-      then 'expired'
-    else invitation_row.status
-  end;
+  select public.invitation_effective_status_at_v1(
+    invitation_row.status,
+    invitation_row.start_date,
+    invitation_row.challenge_time_zone,
+    clock_timestamp()
+  );
 $$;
 
 create or replace function public.expire_invitation_if_due_v1(p_invitation_id uuid)
@@ -201,11 +221,6 @@ begin
   if not found then
     raise exception 'Invitation is unavailable.' using errcode = '42501';
   end if;
-  invitation_row := public.expire_invitation_if_due_v1(invitation_row.id);
-  select * into invitation_row from public.invitations where id = p_invitation_id for update;
-  if invitation_row.status <> 'pending' then
-    raise exception 'Invitation is no longer pending.' using errcode = '22023';
-  end if;
   if p_terminal_status = 'revoked' then
     allowed := invitation_row.inviter_id = current_member
       and exists (select 1 from public.member_accounts where id = current_member and status = 'active');
@@ -215,6 +230,13 @@ begin
   end if;
   if not allowed then
     raise exception 'Invitation is unavailable.' using errcode = '42501';
+  end if;
+  -- Role authorization precedes status inspection so a stale or terminal
+  -- Invitation never reveals its existence to an outsider.
+  invitation_row := public.expire_invitation_if_due_v1(invitation_row.id);
+  select * into invitation_row from public.invitations where id = p_invitation_id for update;
+  if invitation_row.status <> 'pending' then
+    raise exception 'Invitation is no longer pending.' using errcode = '22023';
   end if;
 
   insert into public.member_command_idempotency (
@@ -272,6 +294,7 @@ end;
 $$;
 
 revoke all on function public.invitation_effective_status_v1(public.invitations) from public;
+revoke all on function public.invitation_effective_status_at_v1(text, date, text, timestamptz) from public;
 revoke all on function public.expire_invitation_if_due_v1(uuid) from public;
 revoke all on function public.get_pending_invitation_for_member_v1() from public;
 revoke all on function public.get_pending_outgoing_invitation_v1() from public;
@@ -282,6 +305,7 @@ revoke all on function public.decline_invitation_v1(uuid, integer, text, uuid, t
 grant execute on function public.get_pending_invitation_for_member_v1() to authenticated;
 grant execute on function public.get_pending_outgoing_invitation_v1() to authenticated;
 grant execute on function public.get_invitation_v1(uuid) to authenticated;
+grant execute on function public.invitation_effective_status_at_v1(text, date, text, timestamptz) to authenticated;
 grant execute on function public.revoke_invitation_v1(uuid, integer, text, uuid, text, uuid) to authenticated;
 grant execute on function public.decline_invitation_v1(uuid, integer, text, uuid, text, uuid) to authenticated;
 

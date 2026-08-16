@@ -5,6 +5,7 @@ import {
   createUncertainCommandOutcome,
   isPopupRequest,
   type AppSnapshot,
+  type PendingCommand,
   type PopupRequest,
   type PopupResponse,
   type ProtocolError,
@@ -32,11 +33,13 @@ import {
   parseInvitation,
   type CreateInvitationRpc,
   type InvitationTerminalRpc,
+  type InvitationTerminalRpcInput,
   type InvitationRecord,
 } from "./invitation";
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
+const LAST_INVITATION_ID_KEY = "invitation.lastId";
 
 type FoundationHealth = {
   service: "larp-code";
@@ -156,30 +159,29 @@ const invitationCommandRpc: CreateInvitationRpc = {
     return data === null ? null : parseInvitation(data);
   },
 };
+
+async function callInvitationTerminalRpc(
+  functionName: "revoke_invitation_v1" | "decline_invitation_v1",
+  input: InvitationTerminalRpcInput,
+): Promise<ReturnType<typeof parseInvitation>> {
+  const { data, error } = await client.rpc(functionName, {
+    p_idempotency_key: input.idempotencyKey,
+    p_command_version: input.commandVersion,
+    p_command_kind: input.commandKind,
+    p_member_id: input.memberId,
+    p_member_email: input.memberEmail,
+    p_invitation_id: input.invitationId,
+  });
+  if (error) throw error;
+  return parseInvitation(data);
+}
+
 const invitationTerminalRpc: InvitationTerminalRpc = {
   async revokeInvitation(input) {
-    const { data, error } = await client.rpc("revoke_invitation_v1", {
-      p_idempotency_key: input.idempotencyKey,
-      p_command_version: input.commandVersion,
-      p_command_kind: input.commandKind,
-      p_member_id: input.memberId,
-      p_member_email: input.memberEmail,
-      p_invitation_id: input.invitationId,
-    });
-    if (error) throw error;
-    return parseInvitation(data);
+    return callInvitationTerminalRpc("revoke_invitation_v1", input);
   },
   async declineInvitation(input) {
-    const { data, error } = await client.rpc("decline_invitation_v1", {
-      p_idempotency_key: input.idempotencyKey,
-      p_command_version: input.commandVersion,
-      p_command_kind: input.commandKind,
-      p_member_id: input.memberId,
-      p_member_email: input.memberEmail,
-      p_invitation_id: input.invitationId,
-    });
-    if (error) throw error;
-    return parseInvitation(data);
+    return callInvitationTerminalRpc("decline_invitation_v1", input);
   },
   async getInvitation(invitationId) {
     const { data, error } = await client.rpc("get_invitation_v1", { p_invitation_id: invitationId });
@@ -298,9 +300,10 @@ function invitationSnapshot(
   worker: WorkerEvidence,
   invitation: InvitationRecord,
   role: "inviter" | "invitee",
+  pendingCommand: PendingCommand | null = null,
 ): AppSnapshot {
   return {
-    ...snapshotMetadata(health, worker, null),
+    ...snapshotMetadata(health, worker, pendingCommand),
     kind: "invitation",
     invitation,
     role,
@@ -308,6 +311,10 @@ function invitationSnapshot(
       ? role === "inviter" ? ["revoke"] : ["accept", "decline"]
       : [],
   };
+}
+
+async function rememberInvitation(invitationId: string): Promise<void> {
+  await extensionStorage.set(LAST_INVITATION_ID_KEY, invitationId);
 }
 
 async function respondToCommand(
@@ -388,23 +395,32 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     ?? await invitationTerminalCommands.readPending();
   const incomingInvitation = await invitationCommandRpc.getPendingInvitation?.();
   if (incomingInvitation) {
-    return {
-      ...snapshotMetadata(health, worker, pendingCommand),
-      kind: "invitation",
-      invitation: incomingInvitation,
-      role: "invitee",
-      actions: ["accept", "decline"],
-    };
+    await rememberInvitation(incomingInvitation.id);
+    return invitationSnapshot(health, worker, incomingInvitation, "invitee", pendingCommand);
   }
   const outgoingInvitation = await invitationTerminalRpc.getPendingOutgoingInvitation?.();
   if (outgoingInvitation) {
-    return {
-      ...snapshotMetadata(health, worker, pendingCommand),
-      kind: "invitation",
-      invitation: outgoingInvitation,
-      role: "inviter",
-      actions: ["revoke"],
-    };
+    await rememberInvitation(outgoingInvitation.id);
+    return invitationSnapshot(health, worker, outgoingInvitation, "inviter", pendingCommand);
+  }
+  const rememberedInvitationId = await extensionStorage.get(LAST_INVITATION_ID_KEY);
+  if (typeof rememberedInvitationId === "string") {
+    try {
+      const rememberedInvitation = await invitationTerminalRpc.getInvitation?.(rememberedInvitationId);
+      if (rememberedInvitation && ["revoked", "declined", "expired"].includes(rememberedInvitation.status)) {
+        return invitationSnapshot(
+          health,
+          worker,
+          rememberedInvitation,
+          rememberedInvitation.inviterId === identity.memberId ? "inviter" : "invitee",
+          pendingCommand,
+        );
+      }
+    } catch {
+      // A changed browser identity or a removed Invitation must not leak or
+      // block the current Member's account Snapshot.
+    }
+    await extensionStorage.remove(LAST_INVITATION_ID_KEY);
   }
   const metadata = snapshotMetadata(health, worker, pendingCommand);
   return { ...metadata, kind: "account", account };
@@ -476,6 +492,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
             async (applied) => {
               const health = await readFoundationHealth();
               const worker = await workerEvidencePromise;
+              await rememberInvitation(applied.invitation.id);
               return invitationSnapshot(health, worker, applied.invitation, "inviter");
             },
           );
@@ -492,6 +509,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
             async (applied) => {
               const health = await readFoundationHealth();
               const worker = await workerEvidencePromise;
+              await rememberInvitation(applied.invitation.id);
               return invitationSnapshot(
                 health,
                 worker,

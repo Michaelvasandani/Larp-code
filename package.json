@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
+    "acceptance:invitation": "node scripts/invitation-lifecycle-acceptance.mjs",
     "test:watch": "vitest",
     "backend:start": "supabase start",
     "backend:stop": "supabase stop",
