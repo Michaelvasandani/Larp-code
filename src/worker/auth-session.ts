@@ -52,6 +52,9 @@ export type VerifyEmailOtpResult = SignInState | { status: "authenticated"; sess
 
 const COOLDOWN_KEY = "otp.cooldownUntil";
 const DEFAULT_COOLDOWN_MS = 30_000;
+const OTP_RATE_LIMIT_PREFIX = "otp.rate.";
+const DEFAULT_OTP_WINDOW_MS = 60 * 60 * 1_000;
+const DEFAULT_MAX_OTP_REQUESTS_PER_DESTINATION = 5;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function isRateLimited(error: unknown): boolean {
@@ -82,6 +85,8 @@ export function createAuthSessionAdapter({
   sessionStorageKey = "supabase.auth.token",
   now = () => Date.now(),
   cooldownMs = DEFAULT_COOLDOWN_MS,
+  otpWindowMs = DEFAULT_OTP_WINDOW_MS,
+  maxOtpRequestsPerDestination = DEFAULT_MAX_OTP_REQUESTS_PER_DESTINATION,
 }: {
   auth: AuthApi;
   storage: MemberStorage;
@@ -89,6 +94,9 @@ export function createAuthSessionAdapter({
   sessionStorageKey?: string;
   now?: () => number;
   cooldownMs?: number;
+  /** A generic destination limit is persisted so a worker restart cannot reset it. */
+  otpWindowMs?: number;
+  maxOtpRequestsPerDestination?: number;
 }) {
   async function readCooldown(): Promise<number | null> {
     const value = await storage.get(COOLDOWN_KEY);
@@ -96,6 +104,21 @@ export function createAuthSessionAdapter({
   }
 
   let otpRequestInFlight = false;
+
+  async function allowOtpDestination(email: string, currentTime: number): Promise<boolean> {
+    const key = `${OTP_RATE_LIMIT_PREFIX}${email}`;
+    const stored = await storage.get(key);
+    const value = typeof stored === "object" && stored !== null ? stored as { windowStartedAt?: unknown; attempts?: unknown } : {};
+    const windowStartedAt = typeof value.windowStartedAt === "number" ? value.windowStartedAt : currentTime;
+    const attempts = typeof value.attempts === "number" ? value.attempts : 0;
+    if (currentTime - windowStartedAt >= otpWindowMs) {
+      await storage.set(key, { windowStartedAt: currentTime, attempts: 1 });
+      return true;
+    }
+    if (attempts >= maxOtpRequestsPerDestination) return false;
+    await storage.set(key, { windowStartedAt, attempts: attempts + 1 });
+    return true;
+  }
 
   async function clearStoredSession(): Promise<void> {
     // Ask the owned Supabase session client to clear its in-memory Member
@@ -130,6 +153,10 @@ export function createAuthSessionAdapter({
       return { status: "resend_cooldown", resendAvailableAt: availableAt(cooldownUntil) };
     }
     if (cooldownUntil !== null) await storage.remove(COOLDOWN_KEY);
+
+    if (!(await allowOtpDestination(email, currentTime))) {
+      return { status: "rate_limited", retryAfterSeconds: 30 };
+    }
 
     const setCooldown = async (currentTime: number): Promise<string> => {
       const resendAvailableAt = currentTime + cooldownMs;

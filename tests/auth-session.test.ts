@@ -96,6 +96,32 @@ describe("service-worker-owned auth/session adapter", () => {
     await expect(first).resolves.toMatchObject({ status: "code_sent" });
   });
 
+  it("applies a generic per-destination OTP limit in addition to resend cooldown", async () => {
+    const auth = authWith();
+    let now = 1_000;
+    const adapter = createAuthSessionAdapter({
+      auth,
+      storage: storageWith(),
+      now: () => now,
+      cooldownMs: 0,
+      otpWindowMs: 10_000,
+      maxOtpRequestsPerDestination: 2,
+    });
+
+    await expect(adapter.requestEmailOtp("member@example.test")).resolves.toMatchObject({ status: "code_sent" });
+    await expect(adapter.requestEmailOtp("member@example.test")).resolves.toMatchObject({ status: "code_sent" });
+    await expect(adapter.requestEmailOtp("member@example.test")).resolves.toEqual({ status: "rate_limited", retryAfterSeconds: 30 });
+    await expect(adapter.requestEmailOtp("other@example.test")).resolves.toMatchObject({ status: "code_sent" });
+    now += 10_001;
+    await expect(adapter.requestEmailOtp("member@example.test")).resolves.toMatchObject({ status: "code_sent" });
+    expect(auth.requested).toEqual([
+      "member@example.test",
+      "member@example.test",
+      "other@example.test",
+      "member@example.test",
+    ]);
+  });
+
   it("distinguishes invalid, expired, rate-limited, and unavailable verification failures", async () => {
     const failures = [
       [{ status: 400, message: "Token is invalid" }, "invalid_code"],

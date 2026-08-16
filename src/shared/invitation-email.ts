@@ -4,7 +4,7 @@ export const INVITATION_EMAIL_DISCLAIMER = "This operational email contains no C
 export type InvitationEmail = Readonly<{ subject: string; text: string }>;
 
 export function sanitizeInviterDisplayName(value: string): string {
-  return value.replace(/[\r\n]/g, " ").trim() || "A Member";
+  return value.replace(/[\r\n\p{Cc}]/gu, " ").trim() || "A Member";
 }
 
 /** Canonical template used by the worker boundary and the delivery function. */

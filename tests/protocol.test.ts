@@ -70,6 +70,17 @@ describe("versioned popup/worker protocol", () => {
     expect(isPopupResponse({ ok: false, error: "not typed" })).toBe(false);
   });
 
+  it("accepts only short diagnostic references on member-visible failures", () => {
+    expect(isPopupResponse({
+      ok: false,
+      error: { code: "internal", message: "The foundation could not load current state.", diagnosticId: "018F7C3D54" },
+    })).toBe(true);
+    expect(isPopupResponse({
+      ok: false,
+      error: { code: "internal", message: "The foundation could not load current state.", diagnosticId: "member@example.test" },
+    })).toBe(false);
+  });
+
   it("accepts the email OTP request and verification messages", () => {
     expect(isPopupRequest({
       version: PROTOCOL_VERSION,

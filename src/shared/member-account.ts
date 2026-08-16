@@ -2,7 +2,7 @@ export type MemberAccount = {
   id: string;
   email: string;
   displayName: string;
-  status: "active";
+  status: "active" | "suspended";
   createdAt: string;
   updatedAt: string;
   adultConfirmedAt: string;
@@ -42,11 +42,10 @@ export function isMemberAccount(value: unknown): value is MemberAccount {
     && isNonEmptyString(value.id)
     && isNonEmptyString(value.email)
     && isNonEmptyString(value.displayName)
-    && value.status === "active"
+    && (value.status === "active" || value.status === "suspended")
     && isNonEmptyString(value.createdAt)
     && isNonEmptyString(value.updatedAt)
     && isNonEmptyString(value.adultConfirmedAt)
     && isNonEmptyString(value.consentAcceptedAt)
     && isNonEmptyString(value.consentVersion);
 }
-

@@ -250,6 +250,24 @@ function AuthenticatedPlaceholder({
   );
 }
 
+function SuspendedAccountView({
+  snapshot,
+  onSignOut,
+}: {
+  snapshot: Extract<AppSnapshot, { kind: "account" }>;
+  onSignOut: () => Promise<PopupResponse | undefined>;
+}) {
+  return (
+    <section className="state-card" role="alert" aria-labelledby="suspended-account-title">
+      <p className="eyebrow">MEMBER ACCOUNT</p>
+      <h2 id="suspended-account-title">Account access is unavailable</h2>
+      <p>For security, this Member Account cannot access larp-code. If you contact support, include the short diagnostic identifier shown with any error.</p>
+      <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
+      <SnapshotDetails snapshot={snapshot} />
+    </section>
+  );
+}
+
 function UpdateRequired({
   snapshot,
   onAction,
@@ -1215,13 +1233,15 @@ export function App() {
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "account" && (
-        <MemberAccountView
-          snapshot={state.snapshot}
-          onSignOut={signOut}
-          onUpdate={sendAuthAction}
-          onRetry={loadSnapshot}
-          commandOutcome={commandOutcome}
-        />
+        state.snapshot.account.status === "suspended"
+          ? <SuspendedAccountView snapshot={state.snapshot} onSignOut={signOut} />
+          : <MemberAccountView
+              snapshot={state.snapshot}
+              onSignOut={signOut}
+              onUpdate={sendAuthAction}
+              onRetry={loadSnapshot}
+              commandOutcome={commandOutcome}
+            />
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "invitation" && (

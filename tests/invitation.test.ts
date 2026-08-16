@@ -59,6 +59,17 @@ describe("Invitation public command boundary", () => {
     expect(email.text).not.toContain("Time Zone");
   });
 
+  it("removes all control characters before rendering a display name in email", () => {
+    const email = renderInvitationEmail({ inviterDisplayName: "Ada\u0000\u0007\nGrace", invitationId: "invitation-1" });
+
+    expect(email.text).toMatch(/Ada\s+Grace invited you to larp-code\./);
+    const renderedName = email.text.split(" invited you to larp-code.")[0]!.split("\n").at(-1)!;
+    expect([...renderedName].some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+    })).toBe(false);
+  });
+
   it("keeps the recoverable command identity versioned", () => {
     expect(INVITATION_COMMAND_KIND).toBe("create_invitation");
     expect(INVITATION_COMMAND_VERSION).toBe(1);

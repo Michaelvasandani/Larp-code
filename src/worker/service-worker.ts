@@ -67,6 +67,7 @@ import {
   type AccountDeletionAuth,
   type AccountDeletionRpc,
 } from "./account-deletion";
+import { createDiagnosticId } from "../shared/diagnostics";
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
@@ -784,10 +785,6 @@ async function getAppSnapshot(
   return { ...metadata, kind: "account", account };
 }
 
-function diagnosticId(): string {
-  return crypto.randomUUID().replaceAll("-", "").slice(0, 10);
-}
-
 function toProtocolError(error: unknown): ProtocolError {
   const message = error instanceof Error ? error.message : String(error);
   const isConnectionError = /fetch|network|connect|supabase|failed to reach|unavailable|socket|refused|reset|aborted|json/i.test(message);
@@ -802,7 +799,7 @@ function toProtocolError(error: unknown): ProtocolError {
         : isBadRequest
           ? message
           : "The foundation could not load current state.",
-    diagnosticId: diagnosticId(),
+    diagnosticId: createDiagnosticId(),
   };
 }
 
