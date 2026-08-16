@@ -97,6 +97,37 @@ describe("recoverable Challenge Solve seam", () => {
     expect(await adapter.readPending()).toMatchObject({ idempotencyKey: "first-key", intent: { problemId: "problem:0001-two-sum" } });
   });
 
+  it("serializes simultaneous Problem submissions behind the one durable key", async () => {
+    const storage = storageWith();
+    let release: (() => void) | undefined;
+    let generatedKey = 0;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const adapter = createSolveCommandAdapter({
+      storage,
+      randomIdempotencyKey: () => generatedKey++ === 0 ? "first-key" : "second-key",
+      rpc: {
+        async createSolve(input) {
+          await gate;
+          return {
+            id: "solve-1",
+            memberId: input.memberId,
+            challengeId: input.challengeId,
+            problemId: input.problemId,
+            claimedAt: "2026-08-01T00:01:00.000Z",
+            originalCreditStatus: "credited" as const,
+            creditStatus: "credited" as const,
+          };
+        },
+      },
+    });
+    const first = adapter.createSolve({ challengeId: "challenge-1", problemId: "problem:0001-two-sum", affirmed: true }, identity);
+    const second = adapter.createSolve({ challengeId: "challenge-1", problemId: "problem:0002-add-two-numbers", affirmed: true }, identity);
+    await Promise.resolve();
+    release?.();
+    await expect(first).resolves.toMatchObject({ status: "applied", idempotencyKey: "first-key" });
+    await expect(second).resolves.toMatchObject({ status: "uncertain", idempotencyKey: "first-key" });
+  });
+
   it("persists a correction before dispatch and recovers the same correction after an uncertain response", async () => {
     const storage = storageWith();
     let attempts = 0;

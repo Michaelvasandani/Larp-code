@@ -7,6 +7,8 @@ import {
 import type { ProblemSetVersion } from "../catalog/problem-set";
 import {
   createPendingCommandStore,
+  claimPendingCommand,
+  uncertainPendingCommand,
   sameIdentity,
   type CommandIdentity,
   type PendingCommandStorage,
@@ -252,7 +254,7 @@ function createDurableInvitationCommandRunner({
       if (!sameIdentity(existing, identity)) {
         await pendingStore.clear(existing.idempotencyKey);
       } else if (!sameIntent(existing, kind, intent)) {
-        return { status: "uncertain", kind, idempotencyKey: existing.idempotencyKey, message: "Checking whether this completed." };
+        return uncertainPendingCommand(existing, kind);
       } else {
         return send(existing, pendingStore.clear);
       }
@@ -276,8 +278,9 @@ function createDurableInvitationCommandRunner({
           intent: intent as InvitationTerminalCommandIntent,
           requestedAt: now(),
         };
-    await pendingStore.persist(pending);
-    return send(pending, pendingStore.clear);
+    const claimed = await claimPendingCommand(pendingStore, pending);
+    if ("status" in claimed) return { ...claimed, kind };
+    return send(claimed, pendingStore.clear);
   }
 
   async function recover(identity: CommandIdentity): Promise<InvitationTransactionOutcome | null> {
@@ -312,7 +315,7 @@ export function createInvitationCommandAdapter({
     randomIdempotencyKey,
     send: async (pending, clear) => {
       if (pending.kind !== INVITATION_COMMAND_KIND) {
-        return { status: "uncertain", kind: INVITATION_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+        return uncertainPendingCommand(pending, INVITATION_COMMAND_KIND);
       }
       const { invitedEmail, timeZone, startDate, deadlineDate, problemSetVersionId } = pending.intent;
       try {
@@ -334,7 +337,7 @@ export function createInvitationCommandAdapter({
           await clear(pending.idempotencyKey);
           return { status: "rejected", ...known };
         }
-        return { status: "uncertain", kind: INVITATION_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+        return uncertainPendingCommand(pending, INVITATION_COMMAND_KIND);
       }
     },
   });
@@ -384,7 +387,7 @@ export function createInvitationTerminalCommandAdapter({
     randomIdempotencyKey,
     send: async (pending, clear) => {
       if (pending.kind !== REVOKE_INVITATION_COMMAND_KIND && pending.kind !== DECLINE_INVITATION_COMMAND_KIND) {
-        return { status: "uncertain", kind: REVOKE_INVITATION_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+        return uncertainPendingCommand(pending, REVOKE_INVITATION_COMMAND_KIND);
       }
       const input: InvitationTerminalRpcInput = {
         idempotencyKey: pending.idempotencyKey,
@@ -411,7 +414,7 @@ export function createInvitationTerminalCommandAdapter({
           await clear(pending.idempotencyKey);
           return { status: "rejected", ...known };
         }
-        return { status: "uncertain", kind: pending.kind, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+        return uncertainPendingCommand(pending, pending.kind);
       }
     },
   });

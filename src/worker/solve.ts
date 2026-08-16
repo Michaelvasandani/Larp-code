@@ -6,7 +6,9 @@ import {
 } from "../shared/protocol";
 import {
   classifyRecoverableCommandFailure,
+  claimPendingCommand,
   createRecoverableCommandRunner,
+  uncertainPendingCommand,
   sameIdentity,
   type CommandIdentity,
   type PendingCommandStorage,
@@ -156,7 +158,7 @@ export function createSolveCommandAdapter({
         || existing.intent.challengeId !== challengeId
         || existing.intent.problemId !== problemId
         || existing.intent.affirmed !== true) {
-        return { status: "uncertain", kind: CREATE_SOLVE_COMMAND_KIND, idempotencyKey: existing.idempotencyKey, message: "Checking whether this completed." };
+        return uncertainPendingCommand(existing, CREATE_SOLVE_COMMAND_KIND);
       } else {
         return runner.send(existing) as Promise<SolveCommandResult>;
       }
@@ -170,8 +172,9 @@ export function createSolveCommandAdapter({
       intent: { challengeId, problemId, affirmed: true },
       requestedAt: now(),
     };
-    await runner.pendingStore.persist(pending);
-    return runner.send(pending) as Promise<SolveCommandResult>;
+    const claimed = await claimPendingCommand(runner.pendingStore, pending);
+    if ("status" in claimed) return { ...claimed, kind: CREATE_SOLVE_COMMAND_KIND };
+    return runner.send(claimed) as Promise<SolveCommandResult>;
   }
 
   async function recover(identity: CommandIdentity): Promise<SolveCommandResult | null> {
@@ -241,7 +244,7 @@ export function createSolveCorrectionCommandAdapter({
         || existing.intent.category !== category
         || existing.intent.reason !== reason
         || existing.intent.resultingCreditStatus !== input.resultingCreditStatus) {
-        return { status: "uncertain", kind: CORRECT_SOLVE_COMMAND_KIND, idempotencyKey: existing.idempotencyKey, message: "Checking whether this completed." };
+        return uncertainPendingCommand(existing, CORRECT_SOLVE_COMMAND_KIND);
       } else {
         return runner.send(existing) as Promise<SolveCorrectionCommandResult>;
       }
@@ -255,8 +258,9 @@ export function createSolveCorrectionCommandAdapter({
       intent: { challengeId, solveId, category, reason, resultingCreditStatus: input.resultingCreditStatus },
       requestedAt: now(),
     };
-    await runner.pendingStore.persist(pending);
-    return runner.send(pending) as Promise<SolveCorrectionCommandResult>;
+    const claimed = await claimPendingCommand(runner.pendingStore, pending);
+    if ("status" in claimed) return { ...claimed, kind: CORRECT_SOLVE_COMMAND_KIND };
+    return runner.send(claimed) as Promise<SolveCorrectionCommandResult>;
   }
 
   async function recover(identity: CommandIdentity): Promise<SolveCorrectionCommandResult | null> {

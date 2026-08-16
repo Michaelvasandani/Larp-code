@@ -88,6 +88,8 @@ describe("versioned popup/worker protocol", () => {
       email: "member@example.test",
     })).toBe(true);
     expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "sign_out" })).toBe(true);
+    expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "request_update" })).toBe(true);
+    expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "erase_local_data" })).toBe(true);
     expect(isPopupRequest({
       version: PROTOCOL_VERSION,
       type: "create_member_account",
@@ -280,6 +282,20 @@ describe("versioned popup/worker protocol", () => {
         ],
       },
     }})).toBe(true);
+  });
+
+  it("accepts an update-required Snapshot without permitting Member Data", () => {
+    const updateRequired = {
+      ...signedOutSnapshot,
+      kind: "update_required" as const,
+      compatibility: {
+        minimumClientVersion: "2.0.0",
+        clientVersion: "0.1.0",
+        updateUrl: "https://chromewebstore.google.com/detail/larp-code",
+      },
+    };
+    expect(isPopupResponse({ ok: true, snapshot: updateRequired })).toBe(true);
+    expect(isPopupResponse({ ok: true, snapshot: { ...updateRequired, account: accountSnapshot.account } })).toBe(false);
   });
 
   it("accepts an account-bound pending command and typed command outcome", () => {

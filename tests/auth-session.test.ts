@@ -144,6 +144,39 @@ describe("service-worker-owned auth/session adapter", () => {
       .resolves.toEqual({ status: "service_unavailable" });
   });
 
+  it("clears only the rejected session credential so pending recovery can survive reauth", async () => {
+    const storage = storageWith({
+      "auth-token": "session",
+      "command.pending": { idempotencyKey: "pending" },
+    });
+    const rejected = authWith({
+      getSession: async () => ({ data: { session: { ...session, expires_at: 1_999 } }, error: null }),
+      refreshSession: async () => ({ data: { session: null }, error: { status: 401, message: "Invalid refresh token" } }),
+    });
+    await expect(createAuthSessionAdapter({ auth: rejected, storage, now: () => 2_000_000 }).restoreSession())
+      .resolves.toEqual({ status: "signed_out" });
+    expect(storage.values).toEqual({ "command.pending": { idempotencyKey: "pending" } });
+  });
+
+  it("clears the Supabase project storage key and in-memory session on refresh rejection", async () => {
+    const storage = storageWith({
+      "sb-project-host-auth-token": "session",
+      "command.pending": { idempotencyKey: "pending" },
+    });
+    const auth = authWith({
+      getSession: async () => ({ data: { session: { ...session, expires_at: 1_999 } }, error: null }),
+      refreshSession: async () => ({ data: { session: null }, error: { status: 401, message: "Invalid refresh token" } }),
+    });
+    await expect(createAuthSessionAdapter({
+      auth,
+      storage,
+      sessionStorageKey: "sb-project-host-auth-token",
+      now: () => 2_000_000,
+    }).restoreSession()).resolves.toEqual({ status: "signed_out" });
+    expect(auth.signOutCalls).toBe(1);
+    expect(storage.values).toEqual({ "command.pending": { idempotencyKey: "pending" } });
+  });
+
   it("signs out locally and clears all member-owned storage", async () => {
     const auth = authWith();
     const storage = storageWith({

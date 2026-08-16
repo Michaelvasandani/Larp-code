@@ -57,6 +57,20 @@ describe("recoverable transactional command seam", () => {
     await expect(commands.read()).resolves.toMatchObject({ idempotencyKey: "key-1" });
   });
 
+  it("serializes stores sharing one durable storage boundary", async () => {
+    const storage = storageWith();
+    const firstStore = createPendingCommandStore(storage);
+    const secondStore = createPendingCommandStore(storage);
+
+    await Promise.all([
+      firstStore.persist(pending()),
+      secondStore.persist(pending({ idempotencyKey: "key-2" })),
+    ].map((operation) => operation.catch(() => undefined)));
+
+    await expect(firstStore.read()).resolves.toMatchObject({ idempotencyKey: "key-1" });
+    await expect(secondStore.read()).resolves.toMatchObject({ idempotencyKey: "key-1" });
+  });
+
   it("persists intent before sending and clears it only after the stored result arrives", async () => {
     const storage = storageWith();
     const calls: string[] = [];

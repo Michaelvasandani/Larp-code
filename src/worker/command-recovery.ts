@@ -65,6 +65,16 @@ export type DisplayNameCommandResult =
 
 export const PENDING_COMMAND_KEY = "command.pending";
 
+export type PendingCommandStore = {
+  read: () => Promise<PendingCommand | null>;
+  persistIfEmpty: (pending: PendingCommand) => Promise<PendingCommand>;
+  persist: (pending: PendingCommand) => Promise<void>;
+  clear: (idempotencyKey?: string) => Promise<void>;
+};
+
+type PendingStoreState = { operation: Promise<void> };
+const pendingStoreStates = new WeakMap<object, PendingStoreState>();
+
 function classifyKnownFailure(error: unknown): { code: "unauthorized" | "validation"; message: string } | null {
   if (isUnavailable(error)) return null;
   const status = errorStatus(error);
@@ -97,10 +107,12 @@ export function isPendingCommandForIdentity(pending: PendingCommand, identity: C
  * independent of worker globals so future domain commands can use the seam.
  */
 export function createPendingCommandStore(storage: PendingCommandStorage) {
-  let operation = Promise.resolve();
+  const storageObject = storage as unknown as object;
+  const state = pendingStoreStates.get(storageObject) ?? { operation: Promise.resolve() };
+  pendingStoreStates.set(storageObject, state);
   const enqueue = <T>(task: () => Promise<T>): Promise<T> => {
-    const result = operation.then(task, task);
-    operation = result.then(() => undefined, () => undefined);
+    const result = state.operation.then(task, task);
+    state.operation = result.then(() => undefined, () => undefined);
     return result;
   };
 
@@ -116,6 +128,13 @@ export function createPendingCommandStore(storage: PendingCommandStorage) {
 
   return {
     read: () => enqueue(readUnlocked),
+    /** Atomically claim the empty envelope so concurrent popup requests cannot both dispatch. */
+    persistIfEmpty: (pending: PendingCommand) => enqueue(async () => {
+      const existing = await readUnlocked();
+      if (existing) return existing;
+      await storage.set(PENDING_COMMAND_KEY, pending);
+      return pending;
+    }),
     persist: (pending: PendingCommand) => enqueue(async () => {
       const existing = await readUnlocked();
       if (existing && existing.idempotencyKey !== pending.idempotencyKey) {
@@ -131,6 +150,29 @@ export function createPendingCommandStore(storage: PendingCommandStorage) {
       await storage.remove(PENDING_COMMAND_KEY);
     }),
   };
+}
+
+/**
+ * Claims the single durable command envelope and returns the exact existing
+ * command when another popup won the race. Every adapter uses this seam so
+ * idempotency and uncertainty cannot drift between command families.
+ */
+export async function claimPendingCommand(
+  pendingStore: Pick<PendingCommandStore, "persistIfEmpty">,
+  pending: PendingCommand,
+): Promise<PendingCommand | UncertainCommandOutcome> {
+  const claimed = await pendingStore.persistIfEmpty(pending);
+  if (claimed.idempotencyKey !== pending.idempotencyKey) {
+    return createUncertainCommandOutcome(claimed.idempotencyKey, claimed.kind);
+  }
+  return claimed;
+}
+
+export function uncertainPendingCommand<K extends TransactionCommandKind>(
+  pending: Pick<PendingCommand, "idempotencyKey" | "kind">,
+  kind: K = pending.kind as K,
+): Omit<UncertainCommandOutcome, "kind"> & { kind: K } {
+  return { ...createUncertainCommandOutcome(pending.idempotencyKey, kind), kind };
 }
 
 type RecoverableCommandKind = TransactionCommandKind;
@@ -160,7 +202,7 @@ export function createRecoverableCommandRunner<
 
   async function send(pending: PendingCommand): Promise<Result> {
     if (pending.kind !== kind) {
-      return { status: "uncertain", kind, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+      return uncertainPendingCommand(pending, kind);
     }
     try {
       const applied = await dispatch(pending as RecoverableCommandForKind<K>);
@@ -172,7 +214,7 @@ export function createRecoverableCommandRunner<
         await pendingStore.clear(pending.idempotencyKey);
         return { status: "rejected", kind, ...known };
       }
-      return { status: "uncertain", kind, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+      return uncertainPendingCommand(pending, kind);
     }
   }
 
@@ -204,7 +246,7 @@ export function createDisplayNameCommandAdapter({
 
   async function send(pending: PendingCommand): Promise<DisplayNameCommandResult> {
     if (pending.kind !== "update_display_name" || typeof pending.intent.displayName !== "string") {
-      return createUncertainCommandOutcome(pending.idempotencyKey, pending.kind);
+      return uncertainPendingCommand(pending, pending.kind);
     }
     try {
       const account = await rpc.updateDisplayName({
@@ -223,7 +265,7 @@ export function createDisplayNameCommandAdapter({
         await pendingStore.clear(pending.idempotencyKey);
         return { status: "rejected", ...known };
       }
-      return createUncertainCommandOutcome(pending.idempotencyKey);
+      return uncertainPendingCommand(pending, "update_display_name");
     }
   }
 
@@ -246,7 +288,7 @@ export function createDisplayNameCommandAdapter({
       if (!sameIdentity(existing, identity)) {
         await pendingStore.clear(existing.idempotencyKey);
       } else if (existing.kind !== "update_display_name" || existing.intent.displayName !== normalized.value) {
-        return createUncertainCommandOutcome(existing.idempotencyKey);
+        return uncertainPendingCommand(existing, "update_display_name");
       } else {
         return (await send(existing));
       }
@@ -261,8 +303,9 @@ export function createDisplayNameCommandAdapter({
       intent: { displayName: normalized.value },
       requestedAt: now(),
     };
-    await pendingStore.persist(pending);
-    return send(pending);
+    const claimed = await claimPendingCommand(pendingStore, pending);
+    if ("status" in claimed) return claimed;
+    return send(claimed);
   }
 
   return {

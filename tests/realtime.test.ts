@@ -24,4 +24,25 @@ describe("Realtime invalidation seam", () => {
       vi.useRealTimers();
     }
   });
+
+  it("reports an unavailable read instead of leaving the popup to trust stale state", async () => {
+    vi.useFakeTimers();
+    try {
+      const onUnavailable = vi.fn();
+      const invalidation = createDebouncedSnapshotInvalidation({
+        refetch: async () => { throw new Error("network unavailable"); },
+        onInvalidated: vi.fn(),
+        onUnavailable,
+        delayMs: 1,
+      });
+      invalidation.invalidate();
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(onUnavailable).toHaveBeenCalledOnce();
+      invalidation.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

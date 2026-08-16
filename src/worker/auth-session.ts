@@ -33,7 +33,7 @@ export type AuthApi = {
     token: string;
     type: "email";
   }) => Promise<AuthResult<{ session: AuthSession | null }>>;
-  signOut: () => Promise<{ error: AuthErrorLike | null }>;
+  signOut: (options?: { scope?: "global" | "local" | "others" }) => Promise<{ error: AuthErrorLike | null }>;
 };
 
 export type MemberStorage = {
@@ -79,11 +79,14 @@ function classifyVerificationFailure(error: unknown): SignInState {
 export function createAuthSessionAdapter({
   auth,
   storage,
+  sessionStorageKey = "supabase.auth.token",
   now = () => Date.now(),
   cooldownMs = DEFAULT_COOLDOWN_MS,
 }: {
   auth: AuthApi;
   storage: MemberStorage;
+  /** The Supabase client's actual `sb-<project>-auth-token` key. */
+  sessionStorageKey?: string;
   now?: () => number;
   cooldownMs?: number;
 }) {
@@ -93,6 +96,19 @@ export function createAuthSessionAdapter({
   }
 
   let otpRequestInFlight = false;
+
+  async function clearStoredSession(): Promise<void> {
+    // Ask the owned Supabase session client to clear its in-memory Member
+    // state, then remove the exact persisted key. Never clear the command
+    // envelope: the originating Member must be able to reconcile after reauth.
+    try { await auth.signOut({ scope: "local" }); } catch { /* local cleanup below remains authoritative */ }
+    await Promise.all([
+      storage.remove(sessionStorageKey),
+      // Legacy keys are cleared for upgrades from earlier clients.
+      storage.remove("auth-token"),
+      storage.remove("supabase.auth-token"),
+    ]);
+  }
 
   async function requestEmailOtp(emailInput: string): Promise<SignInState> {
     if (otpRequestInFlight) return { status: "requesting_code" };
@@ -164,11 +180,15 @@ export function createAuthSessionAdapter({
     try {
       result = await auth.getSession();
     } catch (error) {
-      return isUnavailable(error) ? { status: "service_unavailable" } : { status: "signed_out" };
+      if (isUnavailable(error)) return { status: "service_unavailable" };
+      await clearStoredSession();
+      return { status: "signed_out" };
     }
-    if (result.error) return isUnavailable(result.error)
-      ? { status: "service_unavailable" }
-      : { status: "signed_out" };
+    if (result.error) {
+      if (isUnavailable(result.error)) return { status: "service_unavailable" };
+      await clearStoredSession();
+      return { status: "signed_out" };
+    }
     if (!result.data.session) return { status: "signed_out" };
 
     if (!isExpiredSession(result.data.session, now())) {
@@ -177,14 +197,18 @@ export function createAuthSessionAdapter({
 
     try {
       const refreshed = await auth.refreshSession();
-      if (refreshed.error) return isUnavailable(refreshed.error)
-        ? { status: "service_unavailable" }
-        : { status: "signed_out" };
-      return refreshed.data.session
-        ? { status: "authenticated", session: refreshed.data.session }
-        : { status: "signed_out" };
+      if (refreshed.error) {
+        if (isUnavailable(refreshed.error)) return { status: "service_unavailable" };
+        await clearStoredSession();
+        return { status: "signed_out" };
+      }
+      if (refreshed.data.session) return { status: "authenticated", session: refreshed.data.session };
+      await clearStoredSession();
+      return { status: "signed_out" };
     } catch (error) {
-      return isUnavailable(error) ? { status: "service_unavailable" } : { status: "signed_out" };
+      if (isUnavailable(error)) return { status: "service_unavailable" };
+      await clearStoredSession();
+      return { status: "signed_out" };
     }
   }
 

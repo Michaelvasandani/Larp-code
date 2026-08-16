@@ -124,6 +124,9 @@ export type SnapshotFreshness = {
 
 export type CompatibilityMetadata = {
   minimumClientVersion: string;
+  /** Optional rollout metadata supplied by the backend. */
+  clientVersion?: string;
+  updateUrl?: string;
 };
 
 export type BackendHealth = {
@@ -281,6 +284,12 @@ export type TerminalSnapshot = SnapshotMetadata & {
   actions?: readonly ChallengeAction[];
 };
 
+/** Returned before any Member Data is read when this client is no longer safe. */
+export type UpdateRequiredSnapshot = Omit<SnapshotMetadata, "pendingCommand"> & {
+  kind: "update_required";
+  compatibility: CompatibilityMetadata & { minimumClientVersion: string };
+};
+
 export type AppSnapshot =
   | SignedOutSnapshot
   | SetupRequiredSnapshot
@@ -288,7 +297,8 @@ export type AppSnapshot =
   | InvitationSnapshot
   | ScheduledSnapshot
   | ActiveSnapshot
-  | TerminalSnapshot;
+  | TerminalSnapshot
+  | UpdateRequiredSnapshot;
 
 /** The identity and permissions shown to an authenticated invitee before acceptance. */
 export type InvitationDetails = Readonly<{
@@ -429,7 +439,7 @@ export type PopupRequest =
   | ({ version: ProtocolVersion; type: "correct_solve" } & SolveCorrectionIntent)
   | {
       version: ProtocolVersion;
-      type: "sign_out";
+      type: "sign_out" | "request_update" | "erase_local_data";
     };
 
 export type ProtocolErrorCode =
@@ -451,6 +461,7 @@ export type PopupResponse =
 
 export type WorkerEvent =
   | { version: ProtocolVersion; type: "snapshot_invalidated" }
+  | { version: ProtocolVersion; type: "snapshot_unavailable" }
   | { version: ProtocolVersion; type: "realtime_status"; status: "connecting" | "subscribed" | "closed" | "error" };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -728,8 +739,14 @@ function isSnapshot(value: unknown): value is AppSnapshot {
   }
   if (!isRecord(value.freshness) || !hasExactKeys(value.freshness, ["revision", "fetchedAt"])
     || !isString(value.freshness.revision) || !isString(value.freshness.fetchedAt)) return false;
-  if (!isRecord(value.compatibility) || !hasExactKeys(value.compatibility, ["minimumClientVersion"])
-    || !isString(value.compatibility.minimumClientVersion)) return false;
+  if (!isRecord(value.compatibility)
+    || (!hasExactKeys(value.compatibility, ["minimumClientVersion"])
+      && !hasExactKeys(value.compatibility, ["minimumClientVersion", "clientVersion"])
+      && !hasExactKeys(value.compatibility, ["minimumClientVersion", "updateUrl"])
+      && !hasExactKeys(value.compatibility, ["minimumClientVersion", "clientVersion", "updateUrl"]))
+    || !isString(value.compatibility.minimumClientVersion)
+    || (value.compatibility.clientVersion !== undefined && !isString(value.compatibility.clientVersion))
+    || (value.compatibility.updateUrl !== undefined && !isString(value.compatibility.updateUrl))) return false;
   if (!isRecord(value.backend) || !hasExactKeys(value.backend, ["status", "schemaVersion"])
     || value.backend.status !== "reachable" || typeof value.backend.schemaVersion !== "number") return false;
   if ("pendingCommand" in value && value.pendingCommand !== null && !isPendingCommand(value.pendingCommand)) return false;
@@ -777,13 +794,19 @@ function isSnapshot(value: unknown): value is AppSnapshot {
       && (!('challenge' in value) || isChallengeSnapshot(value.challenge))
       && (!('actions' in value) || isChallengeActions(value.actions));
   }
+  if (value.kind === "update_required") {
+    return hasOptionalPending(keys)
+      && !('pendingCommand' in value)
+      && isString(value.compatibility.minimumClientVersion);
+  }
   return ["signed_out", "invitation", "scheduled", "active", "terminal"].includes(String(value.kind))
     && hasOptionalPending(keys);
 }
 
 export function isPopupRequest(value: unknown): value is PopupRequest {
   if (!isRecord(value) || value.version !== PROTOCOL_VERSION || typeof value.type !== "string") return false;
-  if (value.type === "get_snapshot" || value.type === "sign_out") {
+  if (value.type === "get_snapshot" || value.type === "sign_out"
+    || value.type === "request_update" || value.type === "erase_local_data") {
     return hasExactKeys(value, ["version", "type"]);
   }
   if (value.type === "request_email_otp" || value.type === "resend_email_otp") {

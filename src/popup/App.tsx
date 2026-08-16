@@ -9,8 +9,10 @@ import {
   type CommandOutcome,
   type PopupRequest,
   type PopupResponse,
+  type PendingCommand,
   type SignInState,
   type SolveCorrectionCategory,
+  type TransactionCommandKind,
 } from "../shared/protocol";
 import { DISPLAY_NAME_MAX_LENGTH, stripDisplayNameControlCharacters } from "../worker/member-account";
 import { PINNED_PROBLEM_SET_VERSION } from "../catalog/problem-set";
@@ -19,7 +21,7 @@ import { preserveSignedOutAuthState } from "./auth-state";
 type LoadState =
   | { status: "loading" }
   | { status: "loaded"; snapshot: AppSnapshot }
-  | { status: "error"; message: string };
+  | { status: "unavailable"; message: string; pendingCommand?: PendingCommand | null; pendingRecovery?: boolean };
 
 const defaultSignInState: SignInState = { status: "ready" };
 
@@ -29,12 +31,22 @@ async function sendRequest(request: PopupRequest): Promise<PopupResponse> {
   return response;
 }
 
-async function requestSnapshot(): Promise<AppSnapshot> {
+class SnapshotRequestError extends Error {
+  constructor(message: string, readonly code: string) {
+    super(message);
+    this.name = "SnapshotRequestError";
+  }
+}
+
+async function requestSnapshot(): Promise<{ snapshot: AppSnapshot; command?: CommandOutcome }> {
   const response = await sendRequest({ version: PROTOCOL_VERSION, type: "get_snapshot" });
   if (!response.ok || !response.snapshot) {
-    throw new Error(response.ok ? "The worker returned no current snapshot." : response.error.message);
+    throw new SnapshotRequestError(
+      response.ok ? "The worker returned no current snapshot." : response.error.message,
+      response.ok ? "internal" : response.error.code,
+    );
   }
-  return response.snapshot;
+  return { snapshot: response.snapshot, ...(response.command ? { command: response.command } : {}) };
 }
 
 function SnapshotDetails({ snapshot }: { snapshot: AppSnapshot }) {
@@ -68,6 +80,32 @@ function cooldownSeconds(state: SignInState, now: number): number {
   if (!("resendAvailableAt" in state) || !state.resendAvailableAt) return 0;
   const remaining = Date.parse(state.resendAvailableAt) - now;
   return remaining > 0 ? Math.ceil(remaining / 1_000) : 0;
+}
+
+const DOMAIN_MUTATION_COMMAND_KINDS: Partial<Record<PopupRequest["type"], TransactionCommandKind>> = {
+  update_display_name: "update_display_name",
+  create_invitation: "create_invitation",
+  accept_invitation: "accept_invitation",
+  revoke_invitation: "revoke_invitation",
+  decline_invitation: "decline_invitation",
+  cancel_challenge: "cancel_challenge",
+  abandon_challenge: "abandon_challenge",
+  credit_solve: "create_solve",
+  correct_solve: "correct_solve",
+};
+
+function commandKindForRequest(request: PopupRequest): TransactionCommandKind | undefined {
+  return DOMAIN_MUTATION_COMMAND_KINDS[request.type];
+}
+
+function isDomainMutation(request: PopupRequest): boolean {
+  return request.type === "create_member_account" || commandKindForRequest(request) !== undefined;
+}
+
+function pendingCommandOf(snapshot: AppSnapshot): PendingCommand | null | undefined {
+  // For domain snapshots this is equivalent to
+  // createUncertainCommandOutcome(snapshot.pendingCommand.idempotencyKey, snapshot.pendingCommand.kind).
+  return "pendingCommand" in snapshot ? snapshot.pendingCommand : undefined;
 }
 
 function SignedOut({
@@ -206,6 +244,38 @@ function AuthenticatedPlaceholder({
       <button type="button" className="primary-button" onClick={() => void onSignOut()}>
         Sign out
       </button>
+      <SnapshotDetails snapshot={snapshot} />
+    </section>
+  );
+}
+
+function UpdateRequired({
+  snapshot,
+  onAction,
+}: {
+  snapshot: Extract<AppSnapshot, { kind: "update_required" }>;
+  onAction: (request: PopupRequest) => Promise<PopupResponse | undefined>;
+}) {
+  async function requestUpdate() {
+    await onAction({ version: PROTOCOL_VERSION, type: "request_update" });
+  }
+
+  async function eraseLocalData() {
+    await onAction({ version: PROTOCOL_VERSION, type: "erase_local_data" });
+  }
+
+  async function signOut() {
+    await onAction({ version: PROTOCOL_VERSION, type: "sign_out" });
+  }
+
+  return (
+    <section className="state-card" role="alert" aria-labelledby="update-required-title">
+      <p className="eyebrow">UPDATE REQUIRED</p>
+      <h2 id="update-required-title">Update larp-code to continue</h2>
+      <p>This version is no longer safe to use with the current service. Member data remains unavailable until the extension is updated.</p>
+      <button type="button" className="primary-button" onClick={() => void requestUpdate()}>Request update</button>
+      <button type="button" className="text-button" onClick={() => void signOut()}>Sign out</button>
+      <button type="button" className="text-button" onClick={() => void eraseLocalData()}>Erase local data</button>
       <SnapshotDetails snapshot={snapshot} />
     </section>
   );
@@ -853,25 +923,41 @@ export function App() {
   const [setupError, setSetupError] = useState<string | undefined>();
   const [commandOutcome, setCommandOutcome] = useState<CommandOutcome | undefined>();
   const [realtimeStatus, setRealtimeStatus] = useState<"connecting" | "subscribed" | "closed" | "error">("connecting");
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadSnapshot = useCallback(() => {
-    // Keep an already-rendered view mounted during invalidation/focus refetches
-    // so local form state is not reset by a background Snapshot refresh.
+    // Hide an already-rendered domain view during invalidation/focus refetches;
+    // keeping it mounted preserves permitted OTP drafts without displaying
+    // stale Member or Challenge truth.
+    setRefreshing(true);
     setState((current) => current.status === "loaded" ? current : { status: "loading" });
     void requestSnapshot()
-      .then((snapshot) => {
+      .then(({ snapshot, command }) => {
+        setRefreshing(false);
         setAuthState((current) => preserveSignedOutAuthState(current, snapshot.kind));
         setSetupError(undefined);
-        setCommandOutcome(snapshot.pendingCommand
-          ? createUncertainCommandOutcome(snapshot.pendingCommand.idempotencyKey, snapshot.pendingCommand.kind)
-          : undefined);
+        const pendingCommand = pendingCommandOf(snapshot);
+        setCommandOutcome(command ?? (pendingCommand
+          ? createUncertainCommandOutcome(pendingCommand.idempotencyKey, pendingCommand.kind)
+          : undefined));
         setState({ status: "loaded", snapshot });
       })
       .catch((error: unknown) => {
-        setState({
-          status: "error",
+        setRefreshing(false);
+        if (error instanceof SnapshotRequestError && error.code === "connection_unavailable") {
+          setState((current) => ({
+            status: "unavailable",
+            message: error.message,
+            pendingCommand: current.status === "loaded" ? pendingCommandOf(current.snapshot) : undefined,
+          }));
+          setRefreshing(false);
+          return;
+        }
+        setState((current) => ({
+          status: "unavailable",
           message: error instanceof Error ? error.message : "The connection is unavailable.",
-        });
+          pendingCommand: current.status === "loaded" ? pendingCommandOf(current.snapshot) : undefined,
+        }));
       });
   }, []);
 
@@ -892,7 +978,16 @@ export function App() {
     try {
       const response = await sendRequest(request);
       if (!response.ok) {
-        if (response.error.code === "connection_unavailable") setAuthState({ status: "service_unavailable" });
+        if (response.error.code === "connection_unavailable") {
+          setRefreshing(false);
+          setAuthState({ status: "service_unavailable" });
+          setState((current) => ({
+            status: "unavailable",
+            message: response.error.message,
+            pendingCommand: current.status === "loaded" ? pendingCommandOf(current.snapshot) : undefined,
+            pendingRecovery: isDomainMutation(request),
+          }));
+        }
         if (request.type === "create_member_account") setSetupError(response.error.message);
         return response;
       }
@@ -901,11 +996,13 @@ export function App() {
         setCommandOutcome(response.command);
       }
       if (response.snapshot) {
+        setRefreshing(false);
         setState({ status: "loaded", snapshot: response.snapshot });
         if ("command" in response && response.command) setCommandOutcome(response.command);
-        else if (!response.snapshot.pendingCommand) setCommandOutcome(undefined);
+        else if (!pendingCommandOf(response.snapshot)) setCommandOutcome(undefined);
         if (response.snapshot.kind === "signed_out") setAuthState(defaultSignInState);
       } else if (request.type === "sign_out") {
+        setRefreshing(false);
         setState((current) => current.status === "loaded"
           ? {
               status: "loaded",
@@ -916,37 +1013,38 @@ export function App() {
               },
             }
           : current);
+      } else if (request.type === "erase_local_data") {
+        setRefreshing(false);
+        setAuthState(defaultSignInState);
+        setState((current) => current.status === "loaded"
+          ? { status: "loaded", snapshot: { ...current.snapshot, kind: "signed_out", worker: { ...current.snapshot.worker, sessionRestoredFromStorage: false } } }
+          : current);
       }
       return response;
     } catch {
-      if (request.type === "update_display_name"
-        || request.type === "accept_invitation"
-        || request.type === "revoke_invitation"
-        || request.type === "decline_invitation"
-        || request.type === "cancel_challenge"
-        || request.type === "abandon_challenge"
-        || request.type === "credit_solve"
-        || request.type === "correct_solve") {
-        setCommandOutcome(createUncertainCommandOutcome(
-          "pending-recovery",
-          request.type === "correct_solve"
-            ? "correct_solve"
-            : request.type === "credit_solve"
-              ? "create_solve"
-              : request.type === "abandon_challenge"
-                ? "abandon_challenge"
-                : undefined,
-        ));
-        void requestSnapshot().then((snapshot) => {
+      const commandKind = commandKindForRequest(request);
+      if (commandKind) {
+        setCommandOutcome(createUncertainCommandOutcome("pending-recovery", commandKind));
+        void requestSnapshot().then(({ snapshot, command }) => {
           setState({ status: "loaded", snapshot });
-          if (snapshot.pendingCommand) {
-            setCommandOutcome(createUncertainCommandOutcome(snapshot.pendingCommand.idempotencyKey, snapshot.pendingCommand.kind));
+          const pendingCommand = pendingCommandOf(snapshot);
+          if (command) {
+            setCommandOutcome(command);
+          } else if (pendingCommand) {
+            setCommandOutcome(createUncertainCommandOutcome(pendingCommand.idempotencyKey, pendingCommand.kind));
           } else {
             setCommandOutcome(undefined);
           }
         }).catch(() => undefined);
       }
       setAuthState({ status: "service_unavailable" });
+      setRefreshing(false);
+      setState((current) => ({
+        status: "unavailable",
+        message: "The larp-code connection is unavailable.",
+        pendingCommand: current.status === "loaded" ? pendingCommandOf(current.snapshot) : undefined,
+        pendingRecovery: isDomainMutation(request),
+      }));
       if (request.type === "create_member_account") setSetupError("The larp-code connection is unavailable.");
       return undefined;
     }
@@ -965,6 +1063,13 @@ export function App() {
       const event = message as { version?: number; type?: string; status?: typeof realtimeStatus };
       if (event.version !== PROTOCOL_VERSION) return;
       if (event.type === "snapshot_invalidated") loadSnapshot();
+      if (event.type === "snapshot_unavailable") {
+        setState((current) => ({
+          status: "unavailable",
+          message: "The larp-code connection is unavailable.",
+          pendingCommand: current.status === "loaded" ? pendingCommandOf(current.snapshot) : undefined,
+        }));
+      }
       if (event.type === "realtime_status" && event.status) setRealtimeStatus(event.status);
     };
     port.onMessage.addListener(onWorkerEvent);
@@ -987,7 +1092,7 @@ export function App() {
         <span className="version">v{__CLIENT_VERSION__}</span>
       </header>
 
-      {state.status === "loading" && (
+      {(state.status === "loading" || (state.status === "loaded" && refreshing)) && (
         <section className="state-card" aria-live="polite">
           <p className="eyebrow">CHECKING FOUNDATION</p>
           <h2>Loading current state…</h2>
@@ -995,17 +1100,17 @@ export function App() {
         </section>
       )}
 
-      {state.status === "error" && (
-        <section className="state-card" role="alert">
+      {state.status === "unavailable" && (
+        <section className="state-card" role="alert" aria-labelledby="unavailable-title">
           <p className="eyebrow">CONNECTION UNAVAILABLE</p>
-          <h2>We couldn’t reach larp-code.</h2>
+          <h2 id="unavailable-title">Current state is unavailable</h2>
           <p>{state.message}</p>
-          <button type="button" className="primary-button" onClick={loadSnapshot}>
-            Retry
-          </button>
+          {(state.pendingCommand || state.pendingRecovery) && <p role="status">Checking whether this completed. Retry when the connection is available; no new action will be sent under a different key.</p>}
+          <button type="button" className="primary-button" onClick={loadSnapshot}>Retry</button>
         </section>
       )}
 
+      <div style={{ display: refreshing ? "none" : undefined }} aria-hidden={refreshing}>
       {state.status === "loaded" && state.snapshot.kind === "signed_out" && (
         <SignedOut snapshot={state.snapshot} onRetry={loadSnapshot} authState={authState} onAction={sendAuthAction} />
       )}
@@ -1040,6 +1145,10 @@ export function App() {
         <TerminalChallengeView snapshot={state.snapshot} onSignOut={signOut} onAction={sendAuthAction} commandOutcome={commandOutcome} />
       )}
 
+      {state.status === "loaded" && state.snapshot.kind === "update_required" && (
+        <UpdateRequired snapshot={state.snapshot} onAction={sendAuthAction} />
+      )}
+
       {state.status === "loaded"
         && state.snapshot.kind !== "signed_out"
         && state.snapshot.kind !== "setup_required"
@@ -1047,14 +1156,16 @@ export function App() {
         && state.snapshot.kind !== "invitation"
         && state.snapshot.kind !== "scheduled"
         && state.snapshot.kind !== "active"
-        && state.snapshot.kind !== "terminal" && (
+        && state.snapshot.kind !== "terminal"
+        && state.snapshot.kind !== "update_required" && (
         <AuthenticatedPlaceholder snapshot={state.snapshot} onSignOut={signOut} />
       )}
+      </div>
 
       <footer>
         <span>Fresh worker snapshot</span>
         {realtimeStatus !== "subscribed" && <span role="status">Live updates paused</span>}
-        {state.status === "loaded" && <span>{state.snapshot.authoritativeServerTime}</span>}
+        {state.status === "loaded" && !refreshing && <span>{state.snapshot.authoritativeServerTime}</span>}
       </footer>
     </main>
   );

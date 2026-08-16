@@ -2,10 +2,12 @@
 export function createDebouncedSnapshotInvalidation({
   refetch,
   onInvalidated,
+  onUnavailable,
   delayMs = 250,
 }: {
   refetch: () => Promise<unknown>;
   onInvalidated: () => void;
+  onUnavailable?: () => void;
   delayMs?: number;
 }) {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -14,7 +16,9 @@ export function createDebouncedSnapshotInvalidation({
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = undefined;
-      void refetch().then(() => onInvalidated()).catch(() => undefined);
+      void refetch()
+        .then(() => onInvalidated())
+        .catch(() => onUnavailable?.());
     }, delayMs);
   }
 

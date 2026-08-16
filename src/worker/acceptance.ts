@@ -9,6 +9,8 @@ import {
 } from "../shared/protocol";
 import {
   createRecoverableCommandRunner,
+  claimPendingCommand,
+  uncertainPendingCommand,
   sameIdentity,
   type CommandIdentity,
   type PendingCommandStorage,
@@ -106,7 +108,7 @@ export function createAcceptInvitationCommandAdapter({
       if (!sameIdentity(existing, identity)) {
         await runner.pendingStore.clear(existing.idempotencyKey);
       } else if (existing.kind !== ACCEPT_INVITATION_COMMAND_KIND || !sameInvitation(existing, invitation)) {
-        return { status: "uncertain", kind: ACCEPT_INVITATION_COMMAND_KIND, idempotencyKey: existing.idempotencyKey, message: "Checking whether this completed." };
+        return uncertainPendingCommand(existing, ACCEPT_INVITATION_COMMAND_KIND);
       } else {
         return runner.send(existing);
       }
@@ -120,8 +122,9 @@ export function createAcceptInvitationCommandAdapter({
       intent: { invitationId: invitation.id },
       requestedAt: now(),
     } satisfies PendingCommand;
-    await runner.pendingStore.persist(pending);
-    return runner.send(pending);
+    const claimed = await claimPendingCommand(runner.pendingStore, pending);
+    if ("status" in claimed) return { ...claimed, kind: ACCEPT_INVITATION_COMMAND_KIND };
+    return runner.send(claimed);
   }
 
   async function recover(identity: CommandIdentity): Promise<AcceptanceCommandResult | null> {

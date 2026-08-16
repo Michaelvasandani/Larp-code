@@ -8,6 +8,8 @@ import {
 } from "../shared/protocol";
 import {
   createPendingCommandStore,
+  claimPendingCommand,
+  uncertainPendingCommand,
   type CommandIdentity,
   type PendingCommandStorage,
   sameIdentity,
@@ -147,7 +149,7 @@ export function createChallengeLifecycleCommandAdapter({
 
   async function sendChallengeLifecycleCommand(pending: PendingCommand): Promise<ChallengeLifecycleCommandResult> {
     if (pending.kind !== CANCEL_CHALLENGE_COMMAND_KIND && pending.kind !== ABANDON_CHALLENGE_COMMAND_KIND) {
-      return { status: "uncertain", kind: CANCEL_CHALLENGE_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+      return uncertainPendingCommand(pending, CANCEL_CHALLENGE_COMMAND_KIND);
     }
     try {
       const challenge = await rpc.sendChallengeLifecycleCommand({
@@ -166,7 +168,7 @@ export function createChallengeLifecycleCommandAdapter({
         await pendingStore.clear(pending.idempotencyKey);
         return { status: "rejected", kind: pending.kind, ...known };
       }
-      return { status: "uncertain", kind: pending.kind, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+      return uncertainPendingCommand(pending, pending.kind);
     }
   }
 
@@ -187,7 +189,7 @@ export function createChallengeLifecycleCommandAdapter({
       if (existing.memberId !== identity.memberId || existing.memberEmail.toLowerCase() !== identity.memberEmail.toLowerCase()) {
         await pendingStore.clear(existing.idempotencyKey);
       } else if (existing.kind !== kind || existing.intent.challengeId !== cleanChallengeId) {
-        return { status: "uncertain", kind, idempotencyKey: existing.idempotencyKey, message: "Checking whether this completed." };
+        return uncertainPendingCommand(existing, kind);
       } else {
         return sendChallengeLifecycleCommand(existing);
       }
@@ -202,8 +204,9 @@ export function createChallengeLifecycleCommandAdapter({
       intent: { challengeId: cleanChallengeId },
       requestedAt,
     } as const as Extract<PendingCommand, { kind: typeof CANCEL_CHALLENGE_COMMAND_KIND | typeof ABANDON_CHALLENGE_COMMAND_KIND }>;
-    await pendingStore.persist(pending);
-    return sendChallengeLifecycleCommand(pending);
+    const claimed = await claimPendingCommand(pendingStore, pending);
+    if ("status" in claimed) return { ...claimed, kind };
+    return sendChallengeLifecycleCommand(claimed);
   }
 
   async function cancelChallenge(challengeId: string, identity: CommandIdentity): Promise<ChallengeLifecycleCommandResult> {

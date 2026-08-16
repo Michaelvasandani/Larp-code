@@ -4,6 +4,7 @@ import {
   PROTOCOL_VERSION,
   isTerminalChallengeStatus,
   createUncertainCommandOutcome,
+  type CommandOutcome,
   isPopupRequest,
   type AppSnapshot,
   type ChallengeSnapshot,
@@ -59,6 +60,7 @@ import {
   type SolveCorrectionRpc,
 } from "./solve";
 import { createDebouncedSnapshotInvalidation } from "./realtime";
+import { requiresClientUpdate } from "../shared/compatibility";
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
@@ -69,6 +71,8 @@ type FoundationHealth = {
   service: "larp-code";
   schemaVersion: number;
   serverTime: string;
+  minimumClientVersion?: string;
+  updateUrl?: string;
 };
 
 function createPrefixedStorage(prefix: string) {
@@ -106,6 +110,7 @@ function createPrefixedStorage(prefix: string) {
 
 const extensionStorage = createPrefixedStorage(SESSION_STORAGE_PREFIX);
 const memberStorage: MemberStorage = extensionStorage;
+const SUPABASE_SESSION_STORAGE_KEY = `sb-${new URL(__SUPABASE_URL__).hostname.split(".")[0]}-auth-token`;
 
 const client: SupabaseClient = createClient(__SUPABASE_URL__, __SUPABASE_ANON_KEY__, {
   auth: {
@@ -120,6 +125,7 @@ const client: SupabaseClient = createClient(__SUPABASE_URL__, __SUPABASE_ANON_KE
 const authSessionAdapter = createAuthSessionAdapter({
   auth: client.auth as unknown as AuthApi,
   storage: memberStorage,
+  sessionStorageKey: SUPABASE_SESSION_STORAGE_KEY,
 });
 const memberAccountRpc: MemberAccountRpc = {
   async getMemberAccount() {
@@ -345,6 +351,7 @@ const realtimeInvalidation = createDebouncedSnapshotInvalidation({
   // Realtime is an invalidation signal. The payload is deliberately never
   // rendered as progress or Pet state by the popup.
   onInvalidated: () => broadcastWorkerEvent({ version: PROTOCOL_VERSION, type: "snapshot_invalidated" }),
+  onUnavailable: () => broadcastWorkerEvent({ version: PROTOCOL_VERSION, type: "snapshot_unavailable" }),
 });
 
 function startRealtime(): void {
@@ -388,7 +395,9 @@ function isFoundationHealth(value: unknown): value is FoundationHealth {
     && typeof health.schemaVersion === "number"
     && Number.isInteger(health.schemaVersion)
     && typeof health.serverTime === "string"
-    && !Number.isNaN(Date.parse(health.serverTime));
+    && !Number.isNaN(Date.parse(health.serverTime))
+    && (health.minimumClientVersion === undefined || typeof health.minimumClientVersion === "string")
+    && (health.updateUrl === undefined || typeof health.updateUrl === "string");
 }
 
 async function readFoundationHealth(): Promise<FoundationHealth> {
@@ -415,18 +424,31 @@ function snapshotMetadata(health: FoundationHealth, worker: WorkerEvidence, pend
       revision: `${health.schemaVersion}:${health.serverTime}`,
       fetchedAt,
     },
-    compatibility: { minimumClientVersion: __CLIENT_VERSION__ },
+    compatibility: {
+      minimumClientVersion: health.minimumClientVersion ?? __CLIENT_VERSION__,
+      ...(health.minimumClientVersion ? { clientVersion: __CLIENT_VERSION__ } : {}),
+      ...(health.updateUrl ? { updateUrl: health.updateUrl } : {}),
+    },
     backend: { status: "reachable" as const, schemaVersion: health.schemaVersion },
     worker,
     pendingCommand,
   };
 }
 
-async function buildChallengeSnapshot(challenge: ChallengeSnapshot): Promise<AppSnapshot> {
+function updateRequiredSnapshot(health: FoundationHealth, worker: WorkerEvidence): AppSnapshot {
+  const { pendingCommand, ...metadata } = snapshotMetadata(health, worker, null);
+  void pendingCommand;
+  return {
+    ...metadata,
+    kind: "update_required",
+  };
+}
+
+async function buildChallengeSnapshot(challenge: ChallengeSnapshot, pendingCommand: PendingCommand | null = null): Promise<AppSnapshot> {
   const health = await readFoundationHealth();
   const worker = await workerEvidencePromise;
   const projection = projectChallenge(challenge, health.serverTime);
-  const metadata = snapshotMetadata(health, worker, null);
+  const metadata = snapshotMetadata(health, worker, pendingCommand);
   if (projection.status === "active") {
     if (!projection.challenge.progress) throw new Error("The backend returned an Active Challenge without progress.");
     return {
@@ -454,7 +476,6 @@ async function withAuthenticatedMember<T>(operation: (member: AuthenticatedMembe
     throw new Error("The authentication connection is unavailable.");
   }
   if (sessionState.status !== "authenticated") {
-    await displayNameCommands.clearPending();
     throw new Error("Authentication is required.");
   }
   const memberEmail = sessionState.session.user.email;
@@ -479,6 +500,23 @@ type AppliedAcceptanceResult = Extract<Extract<CommandResult, { kind: "accept_in
 type AppliedChallengeResult = Extract<Extract<CommandResult, { kind: "cancel_challenge" | "abandon_challenge" }>['result'], { status: "applied" }>;
 type AppliedSolveResult = Extract<Extract<CommandResult, { kind: "create_solve" }>['result'], { status: "applied" }>;
 type AppliedCorrectionResult = Extract<Extract<CommandResult, { kind: "correct_solve" }>['result'], { status: "applied" }>;
+
+function commandOutcomeFromRecovery(kind: CommandResult["kind"], result: unknown): CommandOutcome | null {
+  if (typeof result !== "object" || result === null) return null;
+  const value = result as { status?: unknown; idempotencyKey?: unknown; code?: unknown; message?: unknown };
+  if (value.status === "applied" && typeof value.idempotencyKey === "string") {
+    return { status: "applied", kind, idempotencyKey: value.idempotencyKey };
+  }
+  if (value.status === "uncertain" && typeof value.idempotencyKey === "string") {
+    return createUncertainCommandOutcome(value.idempotencyKey, kind);
+  }
+  if (value.status === "rejected"
+    && (value.code === "unauthorized" || value.code === "validation" || value.code === "rate_limited")
+    && typeof value.message === "string") {
+    return { status: "rejected", kind, code: value.code, message: value.message };
+  }
+  return null;
+}
 function invitationSnapshot(
   health: FoundationHealth,
   worker: WorkerEvidence,
@@ -561,7 +599,11 @@ async function respondToCommand(
   };
 }
 
-async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
+async function getAppSnapshot(
+  reconcilePending = true,
+  allowSignedOutIncompatible = false,
+  onRecoveredCommand?: (outcome: CommandOutcome) => void,
+): Promise<AppSnapshot> {
   const sessionStatePromise = pendingSnapshotSession ?? authSessionAdapter.restoreSession();
   pendingSnapshotSession = undefined;
   const [health, worker, sessionState] = await Promise.all([
@@ -569,9 +611,15 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     workerEvidencePromise,
     sessionStatePromise,
   ]);
+  const compatibility = {
+    minimumClientVersion: health.minimumClientVersion ?? __CLIENT_VERSION__,
+  };
+  if (requiresClientUpdate(compatibility, __CLIENT_VERSION__)
+    && !(allowSignedOutIncompatible && sessionState.status === "signed_out")) {
+    return updateRequiredSnapshot(health, worker);
+  }
   if (sessionState.status === "service_unavailable") throw new Error("The authentication connection is unavailable.");
   if (sessionState.status !== "authenticated") {
-    await displayNameCommands.clearPending();
     return { ...snapshotMetadata(health, worker, null), kind: "signed_out" };
   }
 
@@ -581,17 +629,23 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     email: sessionState.session.user.email ?? "",
   };
   if (reconcilePending) {
-    await displayNameCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
-    await invitationCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
-    await acceptanceCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
-    await invitationTerminalCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
-    await challengeCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
-    await solveCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
-    await solveCorrectionCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
+    const commandIdentity = { memberId: identity.memberId, memberEmail: identity.email };
+    const recoveries: Array<[CommandResult["kind"], Promise<unknown>]> = [
+      ["update_display_name", displayNameCommands.recover(commandIdentity)],
+      ["create_invitation", invitationCommands.recover(commandIdentity)],
+      ["accept_invitation", acceptanceCommands.recover(commandIdentity)],
+      ["revoke_invitation", invitationTerminalCommands.recover(commandIdentity)],
+      ["cancel_challenge", challengeCommands.recover(commandIdentity)],
+      ["create_solve", solveCommands.recover(commandIdentity)],
+      ["correct_solve", solveCorrectionCommands.recover(commandIdentity)],
+    ];
+    for (const [kind, recovery] of recoveries) {
+      const outcome = commandOutcomeFromRecovery(kind, await recovery);
+      if (outcome) onRecoveredCommand?.(outcome);
+    }
   }
   const account = await memberAccount.getMemberAccount();
   if (!account) {
-    await displayNameCommands.clearPending();
     const email = sessionState.session.user.email;
     if (!email) throw new Error("The authenticated session has no verified email.");
     return { ...snapshotMetadata(health, worker, null), kind: "setup_required", email };
@@ -650,7 +704,7 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     try {
       const rememberedChallenge = await challengeLifecycleRpc.getChallenge?.(rememberedChallengeId);
       if (rememberedChallenge && isTerminalChallengeStatus(rememberedChallenge.status)) {
-        return buildChallengeSnapshot(rememberedChallenge);
+        return buildChallengeSnapshot(rememberedChallenge, pendingCommand);
       }
     } catch {
       // A changed browser identity or a removed Challenge must not leak or
@@ -662,10 +716,10 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
   if (committedChallenge) {
     // Active Snapshots must expose the complete derived progress object. The
     // helper also keeps Scheduled/Terminal projections on the same seam.
-    return buildChallengeSnapshot(committedChallenge);
+    return buildChallengeSnapshot(committedChallenge, pendingCommand);
   }
   const latestCanceledChallenge = await challengeLifecycleRpc.getLatestCanceledChallenge?.();
-  if (latestCanceledChallenge) return buildChallengeSnapshot(latestCanceledChallenge);
+  if (latestCanceledChallenge) return buildChallengeSnapshot(latestCanceledChallenge, pendingCommand);
   const metadata = snapshotMetadata(health, worker, pendingCommand);
   return { ...metadata, kind: "account", account };
 }
@@ -699,8 +753,17 @@ async function responseWithAuth(auth: NonNullable<Extract<PopupResponse, { ok: t
 async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
   try {
     switch (request.type) {
-      case "get_snapshot":
-        return { ok: true, snapshot: await getAppSnapshot() };
+      case "get_snapshot": {
+        let recoveredCommand: CommandOutcome | undefined;
+        const snapshot = await getAppSnapshot(true, false, (outcome) => {
+          // A rejection is the user-facing precondition explanation; an
+          // applied/uncertain result is still useful if it is the only result.
+          if (!recoveredCommand || outcome.status === "rejected") recoveredCommand = outcome;
+        });
+        return recoveredCommand
+          ? { ok: true, snapshot, command: recoveredCommand }
+          : { ok: true, snapshot };
+      }
       case "request_email_otp":
       case "resend_email_otp":
         return responseWithAuth(await authSessionAdapter.requestEmailOtp(request.email));
@@ -734,11 +797,9 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           return respondToCommand(
             { kind: "create_invitation", result },
             async (applied) => {
-              const health = await readFoundationHealth();
-              const worker = await workerEvidencePromise;
               const invitation = (applied as AppliedInvitationResult).invitation;
               await rememberInvitation(invitation.id);
-              return invitationSnapshot(health, worker, invitation, "inviter");
+              return getAppSnapshot(false);
             },
           );
         });
@@ -752,16 +813,9 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           return respondToCommand(
             { kind: request.type as "revoke_invitation" | "decline_invitation", result },
             async (applied) => {
-              const health = await readFoundationHealth();
-              const worker = await workerEvidencePromise;
               const invitation = (applied as AppliedInvitationResult).invitation;
               await rememberInvitation(invitation.id);
-              return invitationSnapshot(
-                health,
-                worker,
-                invitation,
-                request.type === "revoke_invitation" ? "inviter" : "invitee",
-              );
+              return getAppSnapshot(false);
             },
           );
         });
@@ -791,7 +845,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           const result = await acceptanceCommands.acceptInvitation(invitation, identity);
           return respondToCommand(
             { kind: "accept_invitation", result },
-            async (applied) => buildChallengeSnapshot((applied as AppliedAcceptanceResult).challenge),
+            async () => getAppSnapshot(false),
           );
         });
       }
@@ -803,7 +857,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
             async (applied) => {
               const challenge = (applied as AppliedChallengeResult).challenge;
               await extensionStorage.set(LAST_CHALLENGE_ID_KEY, challenge.id);
-              return buildChallengeSnapshot(challenge);
+              return getAppSnapshot(false);
             },
           );
         });
@@ -816,7 +870,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
             async (applied) => {
               const challenge = (applied as AppliedChallengeResult).challenge;
               await extensionStorage.set(LAST_CHALLENGE_ID_KEY, challenge.id);
-              return buildChallengeSnapshot(challenge);
+              return getAppSnapshot(false);
             },
           );
         });
@@ -842,11 +896,19 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
       case "sign_out": {
         await authSessionAdapter.signOut();
         try {
-          return { ok: true, snapshot: await getAppSnapshot(), auth: { status: "ready" } };
+          return { ok: true, snapshot: await getAppSnapshot(true, true), auth: { status: "ready" } };
         } catch {
           return responseWithAuth({ status: "ready" });
         }
       }
+      case "request_update":
+        // The extension cannot mutate browser installation state without a
+        // broader permission. Keep this action explicit and idempotent; the
+        // update-required page remains the only response that exposes it.
+        return { ok: true, snapshot: await getAppSnapshot(false) };
+      case "erase_local_data":
+        await authSessionAdapter.signOut();
+        return responseWithAuth({ status: "ready" });
     }
   } catch (error) {
     return { ok: false, error: toProtocolError(error) };
