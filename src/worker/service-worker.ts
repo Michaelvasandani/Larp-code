@@ -66,6 +66,7 @@ const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
 const LAST_INVITATION_ID_KEY = "invitation.lastId";
 const LAST_CHALLENGE_ID_KEY = "challenge.lastId";
+const FOUNDATION_HEALTH_TIMEOUT_MS = 3_000;
 
 type FoundationHealth = {
   service: "larp-code";
@@ -404,7 +405,15 @@ async function readFoundationHealth(): Promise<FoundationHealth> {
   let data: unknown;
   let error: unknown;
   try {
-    const response = await client.rpc("foundation_health_v1");
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const response = await Promise.race([
+      client.rpc("foundation_health_v1"),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("The backend connection is unavailable.")), FOUNDATION_HEALTH_TIMEOUT_MS);
+      }),
+    ]).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
     data = response.data;
     error = response.error;
   } catch {

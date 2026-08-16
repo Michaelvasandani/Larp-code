@@ -76,7 +76,13 @@ async function waitForOtp(email) {
 }
 
 async function sendExtensionRequest(page, request) {
-  return page.evaluate(async (message) => chrome.runtime.sendMessage(message), request);
+  return page.evaluate(async (message) => {
+    const response = chrome.runtime.sendMessage(message);
+    const timeout = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("The packaged worker did not answer within 10 seconds.")), 10_000);
+    });
+    return Promise.race([response, timeout]);
+  }, request);
 }
 
 async function clearOtpCooldown(page) {
@@ -318,7 +324,8 @@ try {
     await clearOtpCooldown(page);
   }
   check(rateLimited, "Packaged OTP flow exposes a generic rate-limited state");
-  code = await waitForOtp(email);
+  // Keep the first observed OTP. The following requests intentionally probe
+  // cooldown/rate limiting and are not a new delivery event to wait for.
   await page.focus("#member-code");
   await page.evaluate(() => {
     const input = document.querySelector("#member-code");
