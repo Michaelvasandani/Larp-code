@@ -10,6 +10,7 @@ import {
   type ContractCompatibility,
 } from "./contract-compatibility";
 import type { UpdateRequiredCapabilities } from "./update-required";
+import { isDiagnosticId } from "./diagnostics";
 
 export type { MemberAccount } from "./member-account";
 
@@ -972,5 +973,5 @@ export function isPopupResponse(value: unknown): value is PopupResponse {
   if (!hasExactKeys(value.error, ["code", "message"]) && !hasExactKeys(value.error, ["code", "message", "diagnosticId"])) return false;
   return ["bad_request", "connection_unavailable", "incompatible_client", "internal", "unauthorized"].includes(String(value.error.code))
     && isString(value.error.message)
-    && (value.error.diagnosticId === undefined || isString(value.error.diagnosticId));
+    && (value.error.diagnosticId === undefined || isDiagnosticId(value.error.diagnosticId));
 }

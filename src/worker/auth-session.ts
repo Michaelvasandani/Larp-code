@@ -1,5 +1,6 @@
 import type { SignInState } from "../shared/protocol";
 import { errorMessage, errorStatus, isUnavailable } from "./errors";
+import { createSlidingWindowLimiter } from "./rate-limit";
 
 export type AuthErrorLike = {
   message: string;
@@ -28,6 +29,7 @@ export type AuthApi = {
     email: string;
     options: { shouldCreateUser: boolean };
   }) => Promise<AuthResult<unknown>>;
+  claimEmailOtp: (email: string) => Promise<{ error: AuthErrorLike | null }>;
   verifyOtp: (input: {
     email: string;
     token: string;
@@ -52,6 +54,8 @@ export type VerifyEmailOtpResult = SignInState | { status: "authenticated"; sess
 
 const COOLDOWN_KEY = "otp.cooldownUntil";
 const DEFAULT_COOLDOWN_MS = 30_000;
+const DEFAULT_OTP_WINDOW_MS = 60 * 60 * 1_000;
+const DEFAULT_MAX_OTP_REQUESTS_PER_DESTINATION = 5;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function isRateLimited(error: unknown): boolean {
@@ -82,6 +86,8 @@ export function createAuthSessionAdapter({
   sessionStorageKey = "supabase.auth.token",
   now = () => Date.now(),
   cooldownMs = DEFAULT_COOLDOWN_MS,
+  otpWindowMs = DEFAULT_OTP_WINDOW_MS,
+  maxOtpRequestsPerDestination = DEFAULT_MAX_OTP_REQUESTS_PER_DESTINATION,
 }: {
   auth: AuthApi;
   storage: MemberStorage;
@@ -89,6 +95,9 @@ export function createAuthSessionAdapter({
   sessionStorageKey?: string;
   now?: () => number;
   cooldownMs?: number;
+  /** A generic destination limit is persisted so a worker restart cannot reset it. */
+  otpWindowMs?: number;
+  maxOtpRequestsPerDestination?: number;
 }) {
   async function readCooldown(): Promise<number | null> {
     const value = await storage.get(COOLDOWN_KEY);
@@ -96,6 +105,13 @@ export function createAuthSessionAdapter({
   }
 
   let otpRequestInFlight = false;
+  const otpLimiter = createSlidingWindowLimiter({
+    storage,
+    prefix: "otp.rate.",
+    maxAttempts: maxOtpRequestsPerDestination,
+    windowMs: otpWindowMs,
+    now,
+  });
 
   async function clearStoredSession(): Promise<void> {
     // Ask the owned Supabase session client to clear its in-memory Member
@@ -130,6 +146,21 @@ export function createAuthSessionAdapter({
       return { status: "resend_cooldown", resendAvailableAt: availableAt(cooldownUntil) };
     }
     if (cooldownUntil !== null) await storage.remove(COOLDOWN_KEY);
+
+    if (!(await otpLimiter.allow("destination", email))) {
+      return { status: "rate_limited", retryAfterSeconds: 30 };
+    }
+
+    try {
+      const { error } = await auth.claimEmailOtp(email);
+      if (error) {
+        if (isRateLimited(error)) return { status: "rate_limited", retryAfterSeconds: 30 };
+        if (isUnavailable(error)) return { status: "service_unavailable" };
+        return { status: "service_unavailable" };
+      }
+    } catch (error) {
+      return isUnavailable(error) ? { status: "service_unavailable" } : { status: "service_unavailable" };
+    }
 
     const setCooldown = async (currentTime: number): Promise<string> => {
       const resendAvailableAt = currentTime + cooldownMs;
