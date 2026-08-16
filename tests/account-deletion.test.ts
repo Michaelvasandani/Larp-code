@@ -56,7 +56,7 @@ function rpcWith(overrides: Partial<AccountDeletionRpc> = {}): AccountDeletionRp
 describe("Member Account deletion command seam", () => {
   it("uses a distinct versioned destructive command", () => {
     expect(DELETE_MEMBER_ACCOUNT_COMMAND_KIND).toBe("delete_member_account");
-    expect(DELETE_MEMBER_ACCOUNT_COMMAND_VERSION).toBe(1);
+    expect(DELETE_MEMBER_ACCOUNT_COMMAND_VERSION).toBe(2);
   });
 
   it("requires an explicit irreversible confirmation and a six-digit fresh OTP", async () => {

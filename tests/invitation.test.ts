@@ -61,7 +61,7 @@ describe("Invitation public command boundary", () => {
 
   it("keeps the recoverable command identity versioned", () => {
     expect(INVITATION_COMMAND_KIND).toBe("create_invitation");
-    expect(INVITATION_COMMAND_VERSION).toBe(1);
+    expect(INVITATION_COMMAND_VERSION).toBe(2);
   });
 
   it("persists the complete invitation intent before sending and retries the same key", async () => {

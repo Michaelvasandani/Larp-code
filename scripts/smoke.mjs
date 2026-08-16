@@ -151,7 +151,7 @@ async function invokeDisplayNameCommandRpc(page, { idempotencyKey, memberId, mem
       headers: { apikey: anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         p_idempotency_key: key,
-        p_command_version: 1,
+        p_command_version: 2,
         p_command_kind: "update_display_name",
         p_member_id: id,
         p_member_email: address,
@@ -171,7 +171,7 @@ async function invokeInvitationCommandRpc(page, { idempotencyKey, memberId, memb
       headers: { apikey: anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         p_idempotency_key: key,
-        p_command_version: 1,
+        p_command_version: 2,
         p_command_kind: "create_invitation",
         p_member_id: id,
         p_member_email: address,

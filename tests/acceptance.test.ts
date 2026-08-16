@@ -33,7 +33,7 @@ function storageWith(values: Record<string, unknown> = {}): PendingCommandStorag
 describe("accept Invitation command seam", () => {
   it("uses a distinct versioned command kind", () => {
     expect(ACCEPT_INVITATION_COMMAND_KIND).toBe("accept_invitation");
-    expect(ACCEPT_INVITATION_COMMAND_VERSION).toBe(1);
+    expect(ACCEPT_INVITATION_COMMAND_VERSION).toBe(2);
   });
 
   it("denies an authenticated identity whose email does not match before persisting a command", async () => {

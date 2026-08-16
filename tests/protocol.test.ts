@@ -48,7 +48,7 @@ describe("versioned popup/worker protocol", () => {
   });
 
   it("accepts the immediately preceding request and Snapshot contract during rollout", () => {
-    expect(PREVIOUS_PROTOCOL_VERSION).toBe(0);
+    expect(PREVIOUS_PROTOCOL_VERSION).toBe(1);
     expect(isPopupRequest({ version: PREVIOUS_PROTOCOL_VERSION, type: "get_snapshot" })).toBe(true);
     expect(isPopupResponse({
       ok: true,

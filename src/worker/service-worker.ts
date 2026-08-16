@@ -3,7 +3,6 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import {
   PROTOCOL_VERSION,
   SUPPORTED_PROTOCOL_VERSIONS,
-  TRANSACTION_COMMAND_VERSION,
   isTerminalChallengeStatus,
   createUncertainCommandOutcome,
   type CommandOutcome,
@@ -17,7 +16,6 @@ import {
   type WorkerEvidence,
   type WorkerEvent,
   type ProtocolVersion,
-  type TransactionCommandVersion,
 } from "../shared/protocol";
 import { PINNED_PROBLEM_SET_VERSION } from "../catalog/problem-set";
 import {
@@ -66,12 +64,13 @@ import {
 import { createDebouncedSnapshotInvalidation } from "./realtime";
 import {
   requiresClientUpdate,
-  updateRequiredCapabilities,
-  SUPPORTED_COMMAND_CONTRACT_VERSIONS,
-  SUPPORTED_SNAPSHOT_CONTRACT_VERSIONS,
-  isSupportedCommandContractVersion,
-  isSupportedSnapshotContractVersion,
 } from "../shared/compatibility";
+import {
+  CONTRACT_COMPATIBILITY,
+  negotiateResponseContractVersion,
+} from "../shared/contract-compatibility";
+import { updateRequiredCapabilities } from "../shared/update-required";
+import { isFoundationHealth, type FoundationHealth } from "./foundation-health";
 import {
   createAccountDeletionAdapter,
   parseDeletionReceipt,
@@ -84,19 +83,6 @@ const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
 const LAST_INVITATION_ID_KEY = "invitation.lastId";
 const LAST_CHALLENGE_ID_KEY = "challenge.lastId";
 const FOUNDATION_HEALTH_TIMEOUT_MS = 3_000;
-
-type FoundationHealth = {
-  service: "larp-code";
-  schemaVersion: number;
-  serverTime: string;
-  minimumClientVersion?: string;
-  updateUrl?: string;
-  minimumClientReason?: "security" | "correctness";
-  snapshotContractVersion?: ProtocolVersion;
-  commandContractVersion?: TransactionCommandVersion;
-  supportedSnapshotContractVersions?: ProtocolVersion[];
-  supportedCommandContractVersions?: TransactionCommandVersion[];
-};
 
 function createPrefixedStorage(prefix: string) {
   const storageKey = (key: string) => `${prefix}${key}`;
@@ -390,12 +376,12 @@ const bootId = crypto.randomUUID();
 const initialSessionStatePromise = authSessionAdapter.restoreSession();
 let pendingSnapshotSession: typeof initialSessionStatePromise | undefined = initialSessionStatePromise;
 const workerEvidencePromise = initializeWorkerEvidence();
-const popupPorts = new Set<chrome.runtime.Port>();
+const popupPorts = new Map<chrome.runtime.Port, ProtocolVersion>();
 let realtimeChannel: ReturnType<typeof client.channel> | null = null;
 
 function broadcastWorkerEvent(event: WorkerEvent): void {
-  for (const port of popupPorts) {
-    try { port.postMessage(event); } catch { /* Popup closed between invalidation and delivery. */ }
+  for (const [port, version] of popupPorts) {
+    try { port.postMessage({ ...event, version }); } catch { /* Popup closed between invalidation and delivery. */ }
   }
 }
 
@@ -441,25 +427,6 @@ async function initializeWorkerEvidence(): Promise<WorkerEvidence> {
   };
 }
 
-function isFoundationHealth(value: unknown): value is FoundationHealth {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const health = value as Record<string, unknown>;
-  return health.service === "larp-code"
-    && typeof health.schemaVersion === "number"
-    && Number.isInteger(health.schemaVersion)
-    && typeof health.serverTime === "string"
-    && !Number.isNaN(Date.parse(health.serverTime))
-    && (health.minimumClientVersion === undefined || typeof health.minimumClientVersion === "string")
-    && (health.updateUrl === undefined || typeof health.updateUrl === "string")
-    && (health.minimumClientReason === undefined || health.minimumClientReason === "security" || health.minimumClientReason === "correctness")
-    && (health.snapshotContractVersion === undefined || isSupportedSnapshotContractVersion(health.snapshotContractVersion))
-    && (health.commandContractVersion === undefined || isSupportedCommandContractVersion(health.commandContractVersion))
-    && (health.supportedSnapshotContractVersions === undefined || (Array.isArray(health.supportedSnapshotContractVersions)
-      && health.supportedSnapshotContractVersions.every((version) => isSupportedSnapshotContractVersion(version))))
-    && (health.supportedCommandContractVersions === undefined || (Array.isArray(health.supportedCommandContractVersions)
-      && health.supportedCommandContractVersions.every((version) => isSupportedCommandContractVersion(version))));
-}
-
 async function readFoundationHealth(): Promise<FoundationHealth> {
   let data: unknown;
   let error: unknown;
@@ -483,10 +450,16 @@ async function readFoundationHealth(): Promise<FoundationHealth> {
   return data;
 }
 
-function snapshotMetadata(health: FoundationHealth, worker: WorkerEvidence, pendingCommand: Awaited<ReturnType<typeof displayNameCommands.readPending>>) {
+function snapshotMetadata(
+  health: FoundationHealth,
+  worker: WorkerEvidence,
+  pendingCommand: Awaited<ReturnType<typeof displayNameCommands.readPending>>,
+  responseVersion: ProtocolVersion = PROTOCOL_VERSION,
+) {
   const fetchedAt = new Date().toISOString();
+  const contractMetadata = responseVersion === PROTOCOL_VERSION ? CONTRACT_COMPATIBILITY : {};
   return {
-    contractVersion: PROTOCOL_VERSION,
+    contractVersion: responseVersion,
     authoritativeServerTime: health.serverTime,
     freshness: {
       revision: `${health.schemaVersion}:${health.serverTime}`,
@@ -497,10 +470,7 @@ function snapshotMetadata(health: FoundationHealth, worker: WorkerEvidence, pend
       ...(health.minimumClientVersion ? { clientVersion: __CLIENT_VERSION__ } : {}),
       ...(health.updateUrl ? { updateUrl: health.updateUrl } : {}),
       ...(health.minimumClientReason ? { minimumClientReason: health.minimumClientReason } : {}),
-      snapshotContractVersion: health.snapshotContractVersion ?? PROTOCOL_VERSION,
-      commandContractVersion: health.commandContractVersion ?? TRANSACTION_COMMAND_VERSION,
-      supportedSnapshotContractVersions: health.supportedSnapshotContractVersions ?? [...SUPPORTED_SNAPSHOT_CONTRACT_VERSIONS],
-      supportedCommandContractVersions: health.supportedCommandContractVersions ?? [...SUPPORTED_COMMAND_CONTRACT_VERSIONS],
+      ...contractMetadata,
     },
     backend: { status: "reachable" as const, schemaVersion: health.schemaVersion },
     worker,
@@ -508,21 +478,29 @@ function snapshotMetadata(health: FoundationHealth, worker: WorkerEvidence, pend
   };
 }
 
-function updateRequiredSnapshot(health: FoundationHealth, worker: WorkerEvidence): AppSnapshot {
-  const { pendingCommand, ...metadata } = snapshotMetadata(health, worker, null);
+function updateRequiredSnapshot(
+  health: FoundationHealth,
+  worker: WorkerEvidence,
+  responseVersion: ProtocolVersion = PROTOCOL_VERSION,
+): AppSnapshot {
+  const { pendingCommand, ...metadata } = snapshotMetadata(health, worker, null, responseVersion);
   void pendingCommand;
   return {
     ...metadata,
     kind: "update_required",
-    capabilities: updateRequiredCapabilities(),
+    ...(responseVersion === PROTOCOL_VERSION ? { capabilities: updateRequiredCapabilities() } : {}),
   };
 }
 
-async function buildChallengeSnapshot(challenge: ChallengeSnapshot, pendingCommand: PendingCommand | null = null): Promise<AppSnapshot> {
+async function buildChallengeSnapshot(
+  challenge: ChallengeSnapshot,
+  pendingCommand: PendingCommand | null = null,
+  responseVersion: ProtocolVersion = PROTOCOL_VERSION,
+): Promise<AppSnapshot> {
   const health = await readFoundationHealth();
   const worker = await workerEvidencePromise;
   const projection = projectChallenge(challenge, health.serverTime);
-  const metadata = snapshotMetadata(health, worker, pendingCommand);
+  const metadata = snapshotMetadata(health, worker, pendingCommand, responseVersion);
   if (projection.status === "active") {
     if (!projection.challenge.progress) throw new Error("The backend returned an Active Challenge without progress.");
     return {
@@ -598,9 +576,10 @@ function invitationSnapshot(
   invitation: InvitationRecord,
   role: "inviter" | "invitee",
   pendingCommand: PendingCommand | null = null,
+  responseVersion: ProtocolVersion = PROTOCOL_VERSION,
 ): AppSnapshot {
   return {
-    ...snapshotMetadata(health, worker, pendingCommand),
+    ...snapshotMetadata(health, worker, pendingCommand, responseVersion),
     kind: "invitation",
     invitation,
     role,
@@ -617,10 +596,11 @@ async function rememberInvitation(invitationId: string): Promise<void> {
 async function respondToCommand(
   command: CommandResult,
   buildAppliedSnapshot?: (result: AppliedInvitationResult | AppliedAcceptanceResult | AppliedChallengeResult | AppliedSolveResult | AppliedCorrectionResult) => Promise<AppSnapshot>,
+  responseVersion: ProtocolVersion = PROTOCOL_VERSION,
 ): Promise<PopupResponse> {
   let snapshot: AppSnapshot;
   try {
-    snapshot = await getAppSnapshot(false);
+    snapshot = await getAppSnapshot(false, false, undefined, responseVersion);
   } catch (error) {
     if (command.result.status === "uncertain") {
       return {
@@ -678,6 +658,7 @@ async function getAppSnapshot(
   reconcilePending = true,
   allowSignedOutIncompatible = false,
   onRecoveredCommand?: (outcome: CommandOutcome) => void,
+  responseVersion: ProtocolVersion = PROTOCOL_VERSION,
 ): Promise<AppSnapshot> {
   const sessionStatePromise = pendingSnapshotSession ?? authSessionAdapter.restoreSession();
   pendingSnapshotSession = undefined;
@@ -689,13 +670,17 @@ async function getAppSnapshot(
   const compatibility = {
     minimumClientVersion: health.minimumClientVersion ?? __CLIENT_VERSION__,
   };
-  if (requiresClientUpdate(compatibility, __CLIENT_VERSION__)
+  const negotiatedVersion = negotiateResponseContractVersion(
+    responseVersion,
+    health.supportedSnapshotContractVersions,
+  );
+  if ((requiresClientUpdate(compatibility, __CLIENT_VERSION__) || negotiatedVersion === null)
     && !(allowSignedOutIncompatible && sessionState.status === "signed_out")) {
-    return updateRequiredSnapshot(health, worker);
+    return updateRequiredSnapshot(health, worker, responseVersion);
   }
   if (sessionState.status === "service_unavailable") throw new Error("The authentication connection is unavailable.");
   if (sessionState.status !== "authenticated") {
-    return { ...snapshotMetadata(health, worker, null), kind: "signed_out" };
+    return { ...snapshotMetadata(health, worker, null, responseVersion), kind: "signed_out" };
   }
 
   const memberAccount = createMemberAccountAdapter({ rpc: memberAccountRpc, session: sessionState.session });
@@ -730,13 +715,13 @@ async function getAppSnapshot(
       }
       if (outcome) onRecoveredCommand?.(outcome);
     }
-    if (deletionResolved) return { ...snapshotMetadata(health, worker, null), kind: "signed_out" };
+    if (deletionResolved) return { ...snapshotMetadata(health, worker, null, responseVersion), kind: "signed_out" };
   }
   const account = await memberAccount.getMemberAccount();
   if (!account) {
     const email = sessionState.session.user.email;
     if (!email) throw new Error("The authenticated session has no verified email.");
-    return { ...snapshotMetadata(health, worker, null), kind: "setup_required", email };
+    return { ...snapshotMetadata(health, worker, null, responseVersion), kind: "setup_required", email };
   }
   const pendingCommand = await displayNameCommands.readPending()
     ?? await accountDeletionCommands.readPending()
@@ -751,7 +736,7 @@ async function getAppSnapshot(
     const { invitation, ...details } = incomingDetails;
     await rememberInvitation(invitation.id);
     return {
-      ...snapshotMetadata(health, worker, pendingCommand),
+      ...snapshotMetadata(health, worker, pendingCommand, responseVersion),
       kind: "invitation",
       invitation,
       details,
@@ -762,12 +747,12 @@ async function getAppSnapshot(
   const incomingInvitation = await invitationCommandRpc.getPendingInvitation?.();
   if (incomingInvitation) {
     await rememberInvitation(incomingInvitation.id);
-    return invitationSnapshot(health, worker, incomingInvitation, "invitee", pendingCommand);
+    return invitationSnapshot(health, worker, incomingInvitation, "invitee", pendingCommand, responseVersion);
   }
   const outgoingInvitation = await invitationTerminalRpc.getPendingOutgoingInvitation?.();
   if (outgoingInvitation) {
     await rememberInvitation(outgoingInvitation.id);
-    return invitationSnapshot(health, worker, outgoingInvitation, "inviter", pendingCommand);
+    return invitationSnapshot(health, worker, outgoingInvitation, "inviter", pendingCommand, responseVersion);
   }
   const rememberedInvitationId = await extensionStorage.get(LAST_INVITATION_ID_KEY);
   if (typeof rememberedInvitationId === "string") {
@@ -780,6 +765,7 @@ async function getAppSnapshot(
           rememberedInvitation,
           rememberedInvitation.inviterId === identity.memberId ? "inviter" : "invitee",
           pendingCommand,
+          responseVersion,
         );
       }
     } catch {
@@ -793,7 +779,7 @@ async function getAppSnapshot(
     try {
       const rememberedChallenge = await challengeLifecycleRpc.getChallenge?.(rememberedChallengeId);
       if (rememberedChallenge && isTerminalChallengeStatus(rememberedChallenge.status)) {
-        return buildChallengeSnapshot(rememberedChallenge, pendingCommand);
+        return buildChallengeSnapshot(rememberedChallenge, pendingCommand, responseVersion);
       }
     } catch {
       // A changed browser identity or a removed Challenge must not leak or
@@ -805,11 +791,11 @@ async function getAppSnapshot(
   if (committedChallenge) {
     // Active Snapshots must expose the complete derived progress object. The
     // helper also keeps Scheduled/Terminal projections on the same seam.
-    return buildChallengeSnapshot(committedChallenge, pendingCommand);
+    return buildChallengeSnapshot(committedChallenge, pendingCommand, responseVersion);
   }
   const latestCanceledChallenge = await challengeLifecycleRpc.getLatestCanceledChallenge?.();
-  if (latestCanceledChallenge) return buildChallengeSnapshot(latestCanceledChallenge, pendingCommand);
-  const metadata = snapshotMetadata(health, worker, pendingCommand);
+  if (latestCanceledChallenge) return buildChallengeSnapshot(latestCanceledChallenge, pendingCommand, responseVersion);
+  const metadata = snapshotMetadata(health, worker, pendingCommand, responseVersion);
   return { ...metadata, kind: "account", account };
 }
 
@@ -848,7 +834,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           // A rejection is the user-facing precondition explanation; an
           // applied/uncertain result is still useful if it is the only result.
           if (!recoveredCommand || outcome.status === "rejected") recoveredCommand = outcome;
-        });
+        }, request.version);
         return recoveredCommand
           ? { ok: true, snapshot, command: recoveredCommand }
           : { ok: true, snapshot };
@@ -858,7 +844,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
         return responseWithAuth(await authSessionAdapter.requestEmailOtp(request.email));
       case "verify_email_otp": {
         const result = await authSessionAdapter.verifyEmailOtp(request.email, request.token);
-        if (result.status === "authenticated") return { ok: true, snapshot: await getAppSnapshot() };
+        if (result.status === "authenticated") return { ok: true, snapshot: await getAppSnapshot(true, false, undefined, request.version) };
         return responseWithAuth(result);
       }
       case "create_member_account": {
@@ -866,7 +852,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           const memberAccount = createMemberAccountAdapter({ rpc: memberAccountRpc, session });
           await memberAccount.createMemberAccount(request);
         });
-        return { ok: true, snapshot: await getAppSnapshot() };
+        return { ok: true, snapshot: await getAppSnapshot(true, false, undefined, request.version) };
       }
       case "request_deletion_otp": {
         const result = await withAuthenticatedMember(async ({ identity }) => accountDeletionCommands.requestDeletionOtp(identity.memberEmail));
@@ -896,12 +882,12 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
       case "update_display_name": {
         return withAuthenticatedMember(async ({ identity }) => {
           const result = await displayNameCommands.updateDisplayName(request.displayName, identity);
-          return respondToCommand({ kind: "update_display_name", result });
+          return respondToCommand({ kind: "update_display_name", result }, undefined, request.version);
         });
       }
       case "create_invitation": {
         return withAuthenticatedMember(async ({ identity }) => {
-          const current = await getAppSnapshot(false);
+          const current = await getAppSnapshot(false, false, undefined, request.version);
           const result = await invitationCommands.createInvitation(
             request,
             identity,
@@ -913,8 +899,9 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
             async (applied) => {
               const invitation = (applied as AppliedInvitationResult).invitation;
               await rememberInvitation(invitation.id);
-              return getAppSnapshot(false);
+              return getAppSnapshot(false, false, undefined, request.version);
             },
+            request.version,
           );
         });
       }
@@ -929,14 +916,15 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
             async (applied) => {
               const invitation = (applied as AppliedInvitationResult).invitation;
               await rememberInvitation(invitation.id);
-              return getAppSnapshot(false);
+              return getAppSnapshot(false, false, undefined, request.version);
             },
+            request.version,
           );
         });
       }
       case "accept_invitation": {
         return withAuthenticatedMember(async ({ identity }) => {
-          const current = await getAppSnapshot(false);
+          const current = await getAppSnapshot(false, false, undefined, request.version);
           // A stale/terminal/capacity-conflicting request still goes through the
           // typed command path. The database decides the outcome, then
           // respondToCommand fetches a fresh authorized Snapshot. The
@@ -959,7 +947,8 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           const result = await acceptanceCommands.acceptInvitation(invitation, identity);
           return respondToCommand(
             { kind: "accept_invitation", result },
-            async () => getAppSnapshot(false),
+            async () => getAppSnapshot(false, false, undefined, request.version),
+            request.version,
           );
         });
       }
@@ -971,8 +960,9 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
             async (applied) => {
               const challenge = (applied as AppliedChallengeResult).challenge;
               await extensionStorage.set(LAST_CHALLENGE_ID_KEY, challenge.id);
-              return getAppSnapshot(false);
+              return getAppSnapshot(false, false, undefined, request.version);
             },
+            request.version,
           );
         });
       }
@@ -984,8 +974,9 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
             async (applied) => {
               const challenge = (applied as AppliedChallengeResult).challenge;
               await extensionStorage.set(LAST_CHALLENGE_ID_KEY, challenge.id);
-              return getAppSnapshot(false);
+              return getAppSnapshot(false, false, undefined, request.version);
             },
+            request.version,
           );
         });
       }
@@ -994,7 +985,8 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           const result = await solveCommands.createSolve(request, identity);
           return respondToCommand(
             { kind: "create_solve", result },
-            async () => getAppSnapshot(false),
+            async () => getAppSnapshot(false, false, undefined, request.version),
+            request.version,
           );
         });
       }
@@ -1003,14 +995,15 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           const result = await solveCorrectionCommands.correctSolve(request, identity);
           return respondToCommand(
             { kind: "correct_solve", result },
-            async () => getAppSnapshot(false),
+            async () => getAppSnapshot(false, false, undefined, request.version),
+            request.version,
           );
         });
       }
       case "sign_out": {
         await authSessionAdapter.signOut();
         try {
-          return { ok: true, snapshot: await getAppSnapshot(true, true), auth: { status: "ready" } };
+          return { ok: true, snapshot: await getAppSnapshot(true, true, undefined, request.version), auth: { status: "ready" } };
         } catch {
           return responseWithAuth({ status: "ready" });
         }
@@ -1019,7 +1012,7 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
         // The extension cannot mutate browser installation state without a
         // broader permission. Keep this action explicit and idempotent; the
         // update-required page remains the only response that exposes it.
-        return { ok: true, snapshot: await getAppSnapshot(false) };
+        return { ok: true, snapshot: await getAppSnapshot(false, false, undefined, request.version) };
       case "erase_local_data":
         await authSessionAdapter.signOut();
         return responseWithAuth({ status: "ready" });
@@ -1036,8 +1029,9 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
 });
 
 chrome.runtime.onConnect.addListener((port) => {
-  if (!SUPPORTED_PROTOCOL_VERSIONS.some((version) => port.name === `larp-code-popup-v${version}`)) return;
-  popupPorts.add(port);
+  const version = SUPPORTED_PROTOCOL_VERSIONS.find((candidate) => port.name === `larp-code-popup-v${candidate}`);
+  if (version === undefined) return;
+  popupPorts.set(port, version);
   startRealtime();
   port.onDisconnect.addListener(() => {
     popupPorts.delete(port);

@@ -52,10 +52,10 @@ const rolloutDb = describe.skipIf(!credentials)("compatible contract rollout aga
     const health = await healthClient.rpc("foundation_health_v1");
     expect(health.error).toBeNull();
     expect(health.data).toMatchObject({
-      snapshotContractVersion: 1,
-      commandContractVersion: 1,
-      supportedSnapshotContractVersions: [0, 1],
-      supportedCommandContractVersions: [0, 1],
+      snapshotContractVersion: 2,
+      commandContractVersion: 2,
+      supportedSnapshotContractVersions: [1, 2],
+      supportedCommandContractVersions: [1, 2],
     });
 
     const invalid = await admin.rpc("run_compatibility_backfill_v1", { p_batch_size: 0 });
@@ -91,9 +91,31 @@ const rolloutDb = describe.skipIf(!credentials)("compatible contract rollout aga
     }
     const before = await Promise.all(memberClients.map((client) => client.rpc("get_member_account_v1")));
     expect(before.every((result) => result.error === null)).toBe(true);
+    const domainTables = [
+      "invitations",
+      "challenges",
+      "challenge_members",
+      "member_commitments",
+      "solves",
+      "solve_corrections",
+    ] as const;
+    const domainOrderColumns: Record<typeof domainTables[number], string> = {
+      invitations: "id",
+      challenges: "id",
+      challenge_members: "challenge_id",
+      member_commitments: "member_id",
+      solves: "id",
+      solve_corrections: "id",
+    };
+    const readDomainState = async () => Promise.all(domainTables.map(async (table) => {
+      const result = await admin.from(table).select("*").order(domainOrderColumns[table]);
+      expect(result.error).toBeNull();
+      return result.data;
+    }));
+    const domainBefore = await readDomainState();
     const legacyCommand = await memberClients[0]!.rpc("update_member_display_name_v1", {
       p_idempotency_key: crypto.randomUUID(),
-      p_command_version: 0,
+      p_command_version: 1,
       p_command_kind: "update_display_name",
       p_member_id: rows[0]!.id,
       p_member_email: rows[0]!.email,
@@ -103,14 +125,24 @@ const rolloutDb = describe.skipIf(!credentials)("compatible contract rollout aga
     expect(legacyCommand.data).toMatchObject({ displayName: "Ticket 37 legacy" });
     const baselineAfterLegacyCommand = await Promise.all(memberClients.map((client) => client.rpc("get_member_account_v1")));
 
-    const first = await admin.rpc("run_compatibility_backfill_v1", { p_batch_size: 1 });
-    expect(first.error).toBeNull();
-    expect(first.data).toMatchObject({ migrationVersion: "ticket-37-contract-v1", processedRows: expect.any(Number) });
-    let current = first.data as { completed: boolean; processedRows: number };
+    // Two workers may be restarted or deployed concurrently. The row lock
+    // must serialize them and keep the high-water cursor monotonic.
+    const concurrent = await Promise.all([
+      admin.rpc("run_compatibility_backfill_v1", { p_batch_size: 1 }),
+      admin.rpc("run_compatibility_backfill_v1", { p_batch_size: 1 }),
+    ]);
+    expect(concurrent.every((result) => result.error === null)).toBe(true);
+    const concurrentStates = concurrent.map((result) => result.data as { completed: boolean; processedRows: number; cursorMemberId: string | null });
+    const orderedConcurrentStates = [...concurrentStates].sort((left, right) => left.processedRows - right.processedRows);
+    expect(orderedConcurrentStates[1]!.processedRows).toBeGreaterThanOrEqual(orderedConcurrentStates[0]!.processedRows);
+    let current = orderedConcurrentStates[orderedConcurrentStates.length - 1]!;
     for (let attempt = 0; attempt < 100 && !current.completed; attempt += 1) {
       const resumed = await admin.rpc("run_compatibility_backfill_v1", { p_batch_size: 1 });
       expect(resumed.error).toBeNull();
       expect((resumed.data as { processedRows: number }).processedRows).toBeGreaterThanOrEqual(current.processedRows);
+      expect((resumed.data as { cursorMemberId: string | null }).cursorMemberId === null
+        || current.cursorMemberId === null
+        || (resumed.data as { cursorMemberId: string }).cursorMemberId >= current.cursorMemberId).toBe(true);
       current = resumed.data as typeof current;
     }
     expect(current.completed).toBe(true);
@@ -121,6 +153,7 @@ const rolloutDb = describe.skipIf(!credentials)("compatible contract rollout aga
     const after = await Promise.all(memberClients.map((client) => client.rpc("get_member_account_v1")));
     expect(after.every((result) => result.error === null)).toBe(true);
     expect(after.map((result) => result.data)).toEqual(baselineAfterLegacyCommand.map((result) => result.data));
+    expect(await readDomainState()).toEqual(domainBefore);
     await Promise.all(users.map((result) => admin.auth.admin.deleteUser(result.data.user!.id)));
   });
 });

@@ -1,7 +1,7 @@
 -- Ticket 37: additive contract support and a resumable compatibility backfill.
 --
 -- This migration is intentionally additive and therefore runs in one Postgres
--- transaction. The current (1) and immediately preceding (0) command and
+-- transaction. The current (2) and immediately preceding (1) command and
 -- Snapshot contracts remain accepted by every versioned command function.
 -- Contract removal is a separate, later migration after the Store rollout.
 
@@ -20,6 +20,35 @@ create table if not exists public.compatibility_backfill_runs (
 
 alter table public.compatibility_backfill_runs enable row level security;
 revoke all on table public.compatibility_backfill_runs from public, anon, authenticated;
+
+-- The helper is repeated here as CREATE OR REPLACE because this migration must
+-- also upgrade databases that already ran the foundation migration.
+create or replace function public.is_supported_command_contract_version_v1(p_command_version integer)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select p_command_version in (1, 2);
+$$;
+
+revoke all on function public.is_supported_command_contract_version_v1(integer) from public;
+
+create or replace function public.contract_compatibility_json_v1()
+returns jsonb
+language sql
+immutable
+set search_path = ''
+as $$
+  select jsonb_build_object(
+    'snapshotContractVersion', 2,
+    'commandContractVersion', 2,
+    'supportedSnapshotContractVersions', jsonb_build_array(1, 2),
+    'supportedCommandContractVersions', jsonb_build_array(1, 2)
+  );
+$$;
+
+revoke all on function public.contract_compatibility_json_v1() from public;
 
 comment on table public.compatibility_backfill_runs is
   'Version-marked, resumable, idempotent operational cursor for additive compatibility backfills.';
@@ -49,8 +78,15 @@ begin
     function_definition := replace(
       function_definition,
       'p_command_version is distinct from 1',
-      'p_command_version is null or p_command_version not in (0, 1)'
+      'not public.is_supported_command_contract_version_v1(p_command_version)'
     );
+    function_definition := replace(
+      function_definition,
+      'p_command_version is null or p_command_version not in (0, 1)',
+      'not public.is_supported_command_contract_version_v1(p_command_version)'
+    );
+    function_definition := replace(function_definition, 'p_idempotency_key, 1,', 'p_idempotency_key, p_command_version,');
+    function_definition := replace(function_definition, 'current_member, p_idempotency_key, 1,', 'current_member, p_idempotency_key, p_command_version,');
     if position('create_invitation_v1' in function_definition) > 0 then
       function_definition := replace(
         function_definition,
@@ -100,12 +136,8 @@ begin
       'migrationVersion', run_row.migration_version,
       'cursorMemberId', run_row.cursor_member_id,
       'processedRows', run_row.processed_rows,
-      'completed', true,
-      'currentSnapshotContractVersion', 1,
-      'previousSnapshotContractVersion', 0,
-      'currentCommandContractVersion', 1,
-      'previousCommandContractVersion', 0
-    );
+      'completed', true
+    ) || public.contract_compatibility_json_v1();
   end if;
 
   -- The additive release does not rewrite domain rows. Walking stable Member
@@ -146,12 +178,8 @@ begin
     'migrationVersion', run_row.migration_version,
     'cursorMemberId', run_row.cursor_member_id,
     'processedRows', run_row.processed_rows,
-    'completed', run_row.completed,
-    'currentSnapshotContractVersion', 1,
-    'previousSnapshotContractVersion', 0,
-    'currentCommandContractVersion', 1,
-    'previousCommandContractVersion', 0
-  );
+    'completed', run_row.completed
+  ) || public.contract_compatibility_json_v1();
 end;
 $$;
 
@@ -173,12 +201,8 @@ as $$
     'schemaVersion', 12,
     'serverTime', statement_timestamp(),
     'minimumClientVersion', '0.1.0',
-    'minimumClientReason', 'security',
-    'snapshotContractVersion', 1,
-    'commandContractVersion', 1,
-    'supportedSnapshotContractVersions', jsonb_build_array(0, 1),
-    'supportedCommandContractVersions', jsonb_build_array(0, 1)
-  );
+    'minimumClientReason', 'security'
+  ) || public.contract_compatibility_json_v1();
 $$;
 
 revoke all on function public.foundation_health_v1() from public;

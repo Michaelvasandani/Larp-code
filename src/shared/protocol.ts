@@ -6,8 +6,10 @@ import {
   PREVIOUS_SNAPSHOT_CONTRACT_VERSION,
   isSupportedCommandContractVersion,
   isSupportedSnapshotContractVersion,
-  type UpdateRequiredCapabilities,
-} from "./compatibility";
+  isContractCompatibility,
+  type ContractCompatibility,
+} from "./contract-compatibility";
+import type { UpdateRequiredCapabilities } from "./update-required";
 
 export type { MemberAccount } from "./member-account";
 
@@ -150,11 +152,7 @@ export type CompatibilityMetadata = {
   clientVersion?: string;
   updateUrl?: string;
   minimumClientReason?: "security" | "correctness";
-  snapshotContractVersion?: ProtocolVersion;
-  commandContractVersion?: TransactionCommandVersion;
-  supportedSnapshotContractVersions?: readonly ProtocolVersion[];
-  supportedCommandContractVersions?: readonly TransactionCommandVersion[];
-};
+} & Partial<ContractCompatibility>;
 
 export type BackendHealth = {
   status: "reachable";
@@ -796,28 +794,30 @@ function isSnapshot(value: unknown): value is AppSnapshot {
   }
   if (!isRecord(value.freshness) || !hasExactKeys(value.freshness, ["revision", "fetchedAt"])
     || !isString(value.freshness.revision) || !isString(value.freshness.fetchedAt)) return false;
-  if (!isRecord(value.compatibility)
-    || !isString(value.compatibility.minimumClientVersion)
-    || Object.keys(value.compatibility).some((key) => ![
+  if (!isRecord(value.compatibility)) return false;
+  const compatibility = value.compatibility;
+  if (!isString(compatibility.minimumClientVersion)
+    || Object.keys(compatibility).some((key) => ![
       "minimumClientVersion", "clientVersion", "updateUrl", "minimumClientReason",
       "snapshotContractVersion", "commandContractVersion", "supportedSnapshotContractVersions",
       "supportedCommandContractVersions",
     ].includes(key))
-    || (value.compatibility.clientVersion !== undefined && !isString(value.compatibility.clientVersion))
-    || (value.compatibility.updateUrl !== undefined && !isString(value.compatibility.updateUrl))
-    || (value.compatibility.minimumClientReason !== undefined
-      && value.compatibility.minimumClientReason !== "security"
-      && value.compatibility.minimumClientReason !== "correctness")
-    || (value.compatibility.snapshotContractVersion !== undefined
-      && !isSupportedSnapshotContractVersion(value.compatibility.snapshotContractVersion))
-    || (value.compatibility.commandContractVersion !== undefined
-      && !isSupportedCommandContractVersion(value.compatibility.commandContractVersion))
-    || (value.compatibility.supportedSnapshotContractVersions !== undefined
-      && (!Array.isArray(value.compatibility.supportedSnapshotContractVersions)
-        || value.compatibility.supportedSnapshotContractVersions.some((version) => !isSupportedSnapshotContractVersion(version))))
-    || (value.compatibility.supportedCommandContractVersions !== undefined
-      && (!Array.isArray(value.compatibility.supportedCommandContractVersions)
-        || value.compatibility.supportedCommandContractVersions.some((version) => !isSupportedCommandContractVersion(version))))) return false;
+    || (compatibility.clientVersion !== undefined && !isString(compatibility.clientVersion))
+    || (compatibility.updateUrl !== undefined && !isString(compatibility.updateUrl))
+    || (compatibility.minimumClientReason !== undefined
+      && compatibility.minimumClientReason !== "security"
+      && compatibility.minimumClientReason !== "correctness")) return false;
+  const contractKeys = [
+    "snapshotContractVersion", "commandContractVersion",
+    "supportedSnapshotContractVersions", "supportedCommandContractVersions",
+  ];
+  if (contractKeys.some((key) => key in compatibility)
+    && !isContractCompatibility({
+      snapshotContractVersion: compatibility.snapshotContractVersion,
+      commandContractVersion: compatibility.commandContractVersion,
+      supportedSnapshotContractVersions: compatibility.supportedSnapshotContractVersions,
+      supportedCommandContractVersions: compatibility.supportedCommandContractVersions,
+    })) return false;
   if (!isRecord(value.backend) || !hasExactKeys(value.backend, ["status", "schemaVersion"])
     || value.backend.status !== "reachable" || typeof value.backend.schemaVersion !== "number") return false;
   if ("pendingCommand" in value && value.pendingCommand !== null && !isPendingCommand(value.pendingCommand)) return false;

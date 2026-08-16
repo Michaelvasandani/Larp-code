@@ -196,7 +196,8 @@ begin
   if current_member is null or p_member_id is distinct from current_member then
     raise exception 'Authentication is required.' using errcode = '42501';
   end if;
-  if p_command_version is null or p_command_version not in (0, 1) or p_command_kind is distinct from 'abandon_challenge' then
+  if not public.is_supported_command_contract_version_v1(p_command_version)
+    or p_command_kind is distinct from 'abandon_challenge' then
     raise exception 'The command version is no longer current.' using errcode = '22023';
   end if;
   select lower(email) into verified_email from auth.users
@@ -228,7 +229,7 @@ begin
   insert into public.member_command_idempotency(
     member_id, idempotency_key, command_version, command_kind, member_email, intent
   ) values (
-    current_member, p_idempotency_key, 1, 'abandon_challenge', verified_email,
+    current_member, p_idempotency_key, p_command_version, 'abandon_challenge', verified_email,
     jsonb_build_object('challengeId', p_challenge_id)
   ) on conflict (member_id, idempotency_key) do nothing returning true into claimed;
   if not coalesce(claimed, false) then
@@ -271,7 +272,8 @@ begin
     raise exception 'This controlled-time seam is restricted to the service role.' using errcode = '42501';
   end if;
   current_member := p_member_id;
-  if p_command_version is null or p_command_version not in (0, 1) or p_command_kind is distinct from 'abandon_challenge' then
+  if not public.is_supported_command_contract_version_v1(p_command_version)
+    or p_command_kind is distinct from 'abandon_challenge' then
     raise exception 'The command version is no longer current.' using errcode = '22023';
   end if;
   select lower(email) into verified_email from auth.users
@@ -288,7 +290,7 @@ begin
   challenge_row := public.reconcile_challenge_terminal_v1(challenge_row.id, p_authoritative_now, null, false);
   if challenge_row.status <> 'active' then raise exception 'The Challenge is no longer Active.' using errcode = 'P0003'; end if;
   insert into public.member_command_idempotency(member_id, idempotency_key, command_version, command_kind, member_email, intent)
-  values (current_member, p_idempotency_key, 1, 'abandon_challenge', verified_email, jsonb_build_object('challengeId', p_challenge_id))
+  values (current_member, p_idempotency_key, p_command_version, 'abandon_challenge', verified_email, jsonb_build_object('challengeId', p_challenge_id))
   on conflict (member_id, idempotency_key) do nothing returning true into claimed;
   if not coalesce(claimed, false) then
     select result into command_result from public.member_command_idempotency
@@ -505,7 +507,8 @@ begin
   if current_member is null or p_member_id is distinct from current_member then
     raise exception 'Authentication is required.' using errcode = '42501';
   end if;
-  if p_command_version is null or p_command_version not in (0, 1) or p_command_kind is distinct from 'create_solve' then
+  if not public.is_supported_command_contract_version_v1(p_command_version)
+    or p_command_kind is distinct from 'create_solve' then
     raise exception 'The command version is no longer current.' using errcode = '22023';
   end if;
   if p_affirmed is distinct from true then
@@ -565,7 +568,7 @@ begin
   insert into public.member_command_idempotency(
     member_id, idempotency_key, command_version, command_kind, member_email, intent
   ) values (
-    current_member, p_idempotency_key, 1, 'create_solve', verified_email,
+    current_member, p_idempotency_key, p_command_version, 'create_solve', verified_email,
     jsonb_build_object('challengeId', p_challenge_id, 'problemId', p_problem_id, 'affirmed', true)
   ) on conflict (member_id, idempotency_key) do nothing returning true into claimed;
   if not coalesce(claimed, false) then

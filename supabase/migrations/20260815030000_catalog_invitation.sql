@@ -243,7 +243,8 @@ begin
   if current_member is null or p_member_id is distinct from current_member then
     raise exception 'Authentication is required.' using errcode = '42501';
   end if;
-  if p_command_version is null or p_command_version not in (0, 1) or p_command_kind is distinct from 'create_invitation' then
+  if not public.is_supported_command_contract_version_v1(p_command_version)
+    or p_command_kind is distinct from 'create_invitation' then
     raise exception 'The command version is no longer current.' using errcode = '22023';
   end if;
   select lower(email) into verified_email from auth.users
@@ -296,7 +297,7 @@ begin
   insert into public.member_command_idempotency(
     member_id, idempotency_key, command_version, command_kind, member_email, intent
   ) values (
-    current_member, p_idempotency_key, 1, 'create_invitation', verified_email,
+    current_member, p_idempotency_key, p_command_version, 'create_invitation', verified_email,
     jsonb_build_object('invitedEmail', clean_destination, 'timeZone', p_challenge_time_zone,
       'startDate', p_start_date, 'deadlineDate', p_deadline_date, 'problemSetVersionId', version_row.id)
   ) on conflict (member_id, idempotency_key) do nothing returning true into claimed;
