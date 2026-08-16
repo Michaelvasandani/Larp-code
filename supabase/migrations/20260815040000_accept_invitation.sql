@@ -44,7 +44,10 @@ alter table public.member_commitments enable row level security;
 revoke all on table public.challenges, public.challenge_members, public.member_commitments from anon, authenticated;
 -- The trusted notice/scheduled-job boundary and local invariant tests use the
 -- service role; client roles remain unable to read or mutate these relations.
-grant select on table public.challenges, public.challenge_members, public.member_commitments to service_role;
+-- The trusted local invariant harness seeds boundary rows through the service
+-- role; client roles remain unable to read or mutate these relations.
+grant select, insert, update on table public.challenges to service_role;
+grant select, insert on table public.challenge_members, public.member_commitments to service_role;
 grant select, insert, update on table public.invitations to service_role;
 
 create or replace function public.reject_challenge_terms_update_v1()

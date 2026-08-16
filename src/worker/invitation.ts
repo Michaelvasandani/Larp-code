@@ -12,8 +12,8 @@ import {
   type PendingCommandStorage,
 } from "./command-recovery";
 import { errorCode, errorMessage, errorStatus, isUnavailable } from "./errors";
-import type { ChallengeSnapshot } from "../shared/protocol";
 import type { InvitationDetailsRecord } from "./acceptance";
+import { dateInTimeZone, nextCalendarDate } from "../shared/timezone";
 export {
   INVITATION_EMAIL_DISCLAIMER,
   INVITATION_EMAIL_SUBJECT,
@@ -54,19 +54,6 @@ function isValidDate(value: string): boolean {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month! - 1 && date.getUTCDate() === day;
 }
 
-function dateInTimeZone(instant: string, timeZone: string): string {
-  const date = new Date(instant);
-  if (Number.isNaN(date.valueOf())) throw new Error("Authoritative time is invalid.");
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
 export type InvitationStatus = "pending" | "accepted" | "revoked" | "declined" | "expired";
 export type InvitationRole = "inviter" | "invitee";
 export type InvitationAction = "accept" | "decline" | "revoke";
@@ -87,12 +74,6 @@ export function invitationActionsForRole(
   return role === "inviter" ? ["revoke"] : ["accept", "decline"];
 }
 
-function nextDate(date: string): string {
-  const value = new Date(`${date}T00:00:00.000Z`);
-  value.setUTCDate(value.getUTCDate() + 1);
-  return value.toISOString().slice(0, 10);
-}
-
 function isIanaTimeZone(value: string): boolean {
   if (!value || value.length > 100 || value !== value.trim()) return false;
   try {
@@ -111,7 +92,7 @@ export function normalizeInvitationTerms(input: InvitationTermsInput, authoritat
     return { error: "Use valid inclusive Start Date and Deadline Date values." };
   }
   if (input.deadlineDate < input.startDate) return { error: "Deadline Date must be on or after Start Date." };
-  const tomorrow = nextDate(dateInTimeZone(authoritativeNow, input.timeZone));
+  const tomorrow = nextCalendarDate(dateInTimeZone(authoritativeNow, input.timeZone));
   if (input.startDate < tomorrow) {
     return { error: "Start Date must be the next calendar day or later in the Challenge Time Zone." };
   }
@@ -138,7 +119,6 @@ export type CreateInvitationRpc = {
   dispatchInvitationNotice?: (invitationId: string) => Promise<void>;
   getPendingInvitation?: () => Promise<InvitationRecord | null>;
   getPendingInvitationDetails?: () => Promise<InvitationDetailsRecord | null>;
-  getCommittedChallenge?: () => Promise<ChallengeSnapshot | null>;
 };
 
 export type InvitationTerminalRpcInput = {

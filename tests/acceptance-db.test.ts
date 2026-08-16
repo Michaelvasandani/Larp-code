@@ -86,6 +86,17 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     });
   }
 
+  async function cancel(member: Profile, challengeId: string, key: string) {
+    return member.client.rpc("cancel_challenge_v1", {
+      p_idempotency_key: key,
+      p_command_version: 1,
+      p_command_kind: "cancel_challenge",
+      p_member_id: member.id,
+      p_member_email: member.email,
+      p_challenge_id: challengeId,
+    });
+  }
+
   it("covers two-profile conflicts, boundary rejection, rollback, replay, cleanup, and equal authority", async () => {
     admin = createClient(credentials!.url, credentials!.serviceKey);
     const inviterC = await profile("C");
@@ -168,6 +179,99 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     expect(rollbackRows.data).toHaveLength(0);
     const rollbackInvitationRow = await admin.from("invitations").select("status").eq("id", conflicting).single();
     expect(rollbackInvitationRow.data?.status).toBe("pending");
+  });
+
+  it("cancels a Scheduled Challenge for both Members, releases capacity, and retries idempotently", async () => {
+    admin = createClient(credentials!.url, credentials!.serviceKey);
+    const inviter = await profile("CancelInviter");
+    const invitee = await profile("CancelInvitee");
+    const invitationId = await invitation(inviter, invitee, crypto.randomUUID());
+    const accepted = await accept(invitee, invitationId, crypto.randomUUID());
+    expect(accepted.error).toBeNull();
+    const challengeId = (accepted.data as { id: string }).id;
+    const [inviterView, inviteeView] = await Promise.all([
+      inviter.client.rpc("get_committed_challenge_for_member_v1"),
+      invitee.client.rpc("get_committed_challenge_for_member_v1"),
+    ]);
+    expect(inviterView.error).toBeNull();
+    expect(inviteeView.error).toBeNull();
+    expect(inviterView.data).toMatchObject({ id: challengeId, status: "scheduled" });
+    expect(inviteeView.data).toMatchObject({ id: challengeId, status: "scheduled" });
+    const earlySolve = await admin.from("challenges").update({ status: "active" }).eq("id", challengeId);
+    expect(earlySolve.error?.code).toBe("P0003");
+    const key = crypto.randomUUID();
+    const canceled = await cancel(invitee, challengeId, key);
+    expect(canceled.error).toBeNull();
+    expect(canceled.data).toMatchObject({ id: challengeId, status: "canceled", terminalActorId: invitee.id });
+    const retry = await cancel(invitee, challengeId, key);
+    expect(retry.error).toBeNull();
+    expect(retry.data).toEqual(canceled.data);
+    const commitments = await admin.from("member_commitments").select("member_id").in("member_id", [inviter.id, invitee.id]);
+    expect(commitments.error).toBeNull();
+    expect(commitments.data).toHaveLength(0);
+    const readOnly = await invitee.client.rpc("get_challenge_v1", { p_challenge_id: challengeId });
+    expect(readOnly.error).toBeNull();
+    expect(readOnly.data).toMatchObject({ id: challengeId, status: "canceled" });
+    const latest = await invitee.client.rpc("get_latest_canceled_challenge_for_member_v1");
+    expect(latest.error).toBeNull();
+    expect(latest.data).toMatchObject({ id: challengeId, status: "canceled" });
+    const inviterLatest = await inviter.client.rpc("get_latest_canceled_challenge_for_member_v1");
+    expect(inviterLatest.error).toBeNull();
+    expect(inviterLatest.data).toMatchObject({ id: challengeId, status: "canceled" });
+
+    const replacementInvitation = await invitation(inviter, invitee, crypto.randomUUID());
+    const replacement = await accept(invitee, replacementInvitation, crypto.randomUUID());
+    expect(replacement.error).toBeNull();
+    expect(replacement.data).toMatchObject({ status: "scheduled" });
+  });
+
+  it("uses the SQL authoritative boundary and rejects cancellation once Active", async () => {
+    admin = createClient(credentials!.url, credentials!.serviceKey);
+    const inviter = await profile("BoundaryInviter");
+    const invitee = await profile("BoundaryInvitee");
+    const invitationId = await invitation(inviter, invitee, crypto.randomUUID());
+    const today = new Date().toISOString().slice(0, 10);
+    const inserted = await admin.from("challenges").insert({
+      invitation_id: invitationId,
+      inviter_id: inviter.id,
+      invited_member_id: invitee.id,
+      challenge_time_zone: "UTC",
+      start_date: today,
+      deadline_date: today,
+      problem_set_version_id: "neetcode-150-2026-08-15",
+    }).select("id").single();
+    expect(inserted.error).toBeNull();
+    const challengeId = inserted.data!.id as string;
+    const members = await admin.from("challenge_members").insert([
+      { challenge_id: challengeId, member_id: inviter.id, member_email: inviter.email, display_name: "BoundaryInviter" },
+      { challenge_id: challengeId, member_id: invitee.id, member_email: invitee.email, display_name: "BoundaryInvitee" },
+    ]);
+    expect(members.error).toBeNull();
+    const commitments = await admin.from("member_commitments").insert([
+      { member_id: inviter.id, challenge_id: challengeId },
+      { member_id: invitee.id, challenge_id: challengeId },
+    ]);
+    expect(commitments.error).toBeNull();
+
+    const start = `${today}T00:00:00.000Z`;
+    const before = new Date(Date.parse(start) - 1).toISOString();
+    const [beforeStatus, atStatus, read] = await Promise.all([
+      invitee.client.rpc("get_challenge_effective_status_at_v1", { p_challenge_id: challengeId, p_authoritative_now: before }),
+      invitee.client.rpc("get_challenge_effective_status_at_v1", { p_challenge_id: challengeId, p_authoritative_now: start }),
+      invitee.client.rpc("get_challenge_v1", { p_challenge_id: challengeId }),
+    ]);
+    expect(beforeStatus.error).toBeNull();
+    expect(beforeStatus.data).toBe("scheduled");
+    expect(atStatus.error).toBeNull();
+    expect(atStatus.data).toBe("active");
+    expect(read.error).toBeNull();
+    expect(read.data).toMatchObject({ id: challengeId, status: "active" });
+
+    const tooLate = await cancel(inviter, challengeId, crypto.randomUUID());
+    expect(tooLate.error?.code).toBe("P0003");
+    const stillCommitted = await admin.from("member_commitments").select("member_id").eq("challenge_id", challengeId);
+    expect(stillCommitted.error).toBeNull();
+    expect(stillCommitted.data).toHaveLength(2);
   });
 });
 

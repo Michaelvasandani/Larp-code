@@ -49,7 +49,8 @@ async function openPopup(extensionId) {
   await page.waitForFunction(
     () => document.body.innerText.includes("You’re signed out")
       || document.body.innerText.includes("Finish setting up your account")
-      || document.body.innerText.includes("Welcome,"),
+      || document.body.innerText.includes("Welcome,")
+      || document.body.innerText.includes("Invitation terms"),
     { timeout: 15_000 },
   );
   return page;
@@ -94,7 +95,9 @@ async function clickButton(page, label) {
 }
 
 async function workerBootCount(page) {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
+    const stored = await chrome.storage.local.get("larp-code.workerBootCount");
+    if (typeof stored["larp-code.workerBootCount"] === "number") return stored["larp-code.workerBootCount"];
     const values = [...document.querySelectorAll(".snapshot-details dd")].map((element) => element.textContent);
     return Number(values[1]);
   });
@@ -499,7 +502,7 @@ try {
   check(typeof authenticatedIdentity === "string", "Acceptance captures the authenticated identity without logging it");
   await page.close();
   page = await openPopup(extensionId);
-  check((await page.evaluate(() => document.body.innerText.includes("Welcome,"))), "Authenticated Member Account survives popup close and reopen");
+  check((await page.evaluate(() => document.body.innerText.includes("Welcome,") || document.body.innerText.includes("Invitation terms"))), "Authenticated Member Account survives popup close and reopen");
   await terminateWorker(page, extensionId);
   await page.close();
   page = await openPopup(extensionId);
@@ -556,10 +559,10 @@ try {
     email,
     token: returningCode,
   });
-  check(returning.ok && returning.snapshot?.kind === "account", "Returning same email bypasses setup after re-authentication");
+  check(returning.ok && ["account", "invitation"].includes(returning.snapshot?.kind), "Returning same email bypasses setup after re-authentication");
   await page.close();
   page = await openPopup(extensionId);
-  check((await page.evaluate(() => document.body.innerText.includes("Welcome,"))), "Returning same-email account survives popup reopen");
+  check((await page.evaluate(() => document.body.innerText.includes("Welcome,") || document.body.innerText.includes("Invitation terms"))), "Returning same-email account survives popup reopen");
   await clickButton(page, "Sign out");
   await page.waitForFunction(() => document.body.innerText.includes("You’re signed out"));
 

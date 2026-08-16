@@ -544,22 +544,75 @@ function InvitationView({
   );
 }
 
-function ScheduledView({ snapshot, onSignOut }: { snapshot: Extract<AppSnapshot, { kind: "scheduled" }>; onSignOut: () => Promise<void> }) {
-  const challenge = snapshot.challenge;
+function ChallengeTerms({ challenge }: { challenge: Extract<AppSnapshot, { kind: "scheduled" | "active" | "terminal" }>['challenge'] }) {
+  if (!challenge) return null;
+  return (
+    <dl className="account-details">
+      <div><dt>Challenge Time Zone</dt><dd>{challenge.timeZone}</dd></div>
+      <div><dt>Start Date</dt><dd>{challenge.startDate}</dd></div>
+      <div><dt>Deadline Date</dt><dd>{challenge.deadlineDate}</dd></div>
+      <div><dt>Problem Set Version</dt><dd>{challenge.problemSetVersionId}</dd></div>
+      <div><dt>Members</dt><dd>{challenge.members.map((member) => `${member.displayName} (${member.email})`).join(" and ")}</dd></div>
+    </dl>
+  );
+}
+
+function ScheduledView({ snapshot, onSignOut, onCancel, commandOutcome }: {
+  snapshot: Extract<AppSnapshot, { kind: "scheduled" }>;
+  onSignOut: () => Promise<void>;
+  onCancel: (request: PopupRequest) => Promise<void>;
+  commandOutcome?: CommandOutcome;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const canCancel = snapshot.actions?.includes("cancel") ?? false;
+  async function cancel() {
+    if (!confirming) {
+      setConfirming(true);
+      return;
+    }
+    await onCancel({ version: PROTOCOL_VERSION, type: "cancel_challenge", challengeId: snapshot.challenge.id });
+  }
   return (
     <section className="state-card" aria-labelledby="scheduled-title">
       <p className="eyebrow">SCHEDULED CHALLENGE</p>
       <h2 id="scheduled-title">Your shared Challenge is scheduled</h2>
-      {challenge && (
-        <dl className="account-details">
-          <div><dt>Challenge Time Zone</dt><dd>{challenge.timeZone}</dd></div>
-          <div><dt>Start Date</dt><dd>{challenge.startDate}</dd></div>
-          <div><dt>Deadline Date</dt><dd>{challenge.deadlineDate}</dd></div>
-          <div><dt>Problem Set Version</dt><dd>{challenge.problemSetVersionId}</dd></div>
-          <div><dt>Members</dt><dd>{challenge.members.map((member) => member.displayName).join(" and ")}</dd></div>
-        </dl>
-      )}
+      <ChallengeTerms challenge={snapshot.challenge} />
       <p>Both Members have equal authority, see the shared record, and can end the Challenge.</p>
+      {commandOutcome?.status === "rejected" && <p className="auth-status error-status" role="alert">{commandOutcome.message}</p>}
+      {commandOutcome?.status === "uncertain" && <p className="auth-status" role="status">Checking whether cancellation completed. Refresh to reconcile both Members.</p>}
+      {canCancel && commandOutcome?.status !== "uncertain" && (
+        <button type="button" className="primary-button" onClick={() => void cancel()}>
+          {confirming ? "Confirm cancel for both Members" : "Cancel Challenge"}
+        </button>
+      )}
+      <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
+      <SnapshotDetails snapshot={snapshot} />
+    </section>
+  );
+}
+
+function ActiveView({ snapshot, onSignOut, commandOutcome }: { snapshot: Extract<AppSnapshot, { kind: "active" }>; onSignOut: () => Promise<void>; commandOutcome?: CommandOutcome }) {
+  return (
+    <section className="state-card" aria-labelledby="active-title">
+      <p className="eyebrow">ACTIVE CHALLENGE</p>
+      <h2 id="active-title">Your shared Challenge is active</h2>
+      <ChallengeTerms challenge={snapshot.challenge} />
+      <p>Both Members have equal authority and see the shared record.</p>
+      {commandOutcome?.status === "rejected" && <p className="auth-status error-status" role="alert">{commandOutcome.message}</p>}
+      {snapshot.actions?.includes("solve") && <button type="button" className="primary-button" disabled>Solve Challenge</button>}
+      <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
+      <SnapshotDetails snapshot={snapshot} />
+    </section>
+  );
+}
+
+function TerminalChallengeView({ snapshot, onSignOut }: { snapshot: Extract<AppSnapshot, { kind: "terminal" }>; onSignOut: () => Promise<void> }) {
+  return (
+    <section className="state-card" aria-labelledby="terminal-title">
+      <p className="eyebrow">CHALLENGE ENDED</p>
+      <h2 id="terminal-title">This Challenge was canceled</h2>
+      <ChallengeTerms challenge={snapshot.challenge} />
+      <p>This Challenge is read-only and cannot be reactivated.</p>
       <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
       <SnapshotDetails snapshot={snapshot} />
     </section>
@@ -579,7 +632,7 @@ export function App() {
         setAuthState(defaultSignInState);
         setSetupError(undefined);
         setCommandOutcome(snapshot.pendingCommand
-          ? createUncertainCommandOutcome(snapshot.pendingCommand.idempotencyKey)
+          ? createUncertainCommandOutcome(snapshot.pendingCommand.idempotencyKey, snapshot.pendingCommand.kind)
           : undefined);
         setState({ status: "loaded", snapshot });
       })
@@ -600,7 +653,8 @@ export function App() {
     if (request.type === "update_display_name"
       || request.type === "accept_invitation"
       || request.type === "revoke_invitation"
-      || request.type === "decline_invitation") setCommandOutcome(undefined);
+      || request.type === "decline_invitation"
+      || request.type === "cancel_challenge") setCommandOutcome(undefined);
     try {
       const response = await sendRequest(request);
       if (!response.ok) {
@@ -633,7 +687,8 @@ export function App() {
       if (request.type === "update_display_name"
         || request.type === "accept_invitation"
         || request.type === "revoke_invitation"
-        || request.type === "decline_invitation") {
+        || request.type === "decline_invitation"
+        || request.type === "cancel_challenge") {
         setCommandOutcome(createUncertainCommandOutcome("pending-recovery"));
         void requestSnapshot().then((snapshot) => {
           setState({ status: "loaded", snapshot });
@@ -712,7 +767,15 @@ export function App() {
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "scheduled" && (
-        <ScheduledView snapshot={state.snapshot} onSignOut={signOut} />
+        <ScheduledView snapshot={state.snapshot} onSignOut={signOut} onCancel={sendAuthAction} commandOutcome={commandOutcome} />
+      )}
+
+      {state.status === "loaded" && state.snapshot.kind === "active" && (
+        <ActiveView snapshot={state.snapshot} onSignOut={signOut} commandOutcome={commandOutcome} />
+      )}
+
+      {state.status === "loaded" && state.snapshot.kind === "terminal" && (
+        <TerminalChallengeView snapshot={state.snapshot} onSignOut={signOut} />
       )}
 
       {state.status === "loaded"
@@ -720,7 +783,9 @@ export function App() {
         && state.snapshot.kind !== "setup_required"
         && state.snapshot.kind !== "account"
         && state.snapshot.kind !== "invitation"
-        && state.snapshot.kind !== "scheduled" && (
+        && state.snapshot.kind !== "scheduled"
+        && state.snapshot.kind !== "active"
+        && state.snapshot.kind !== "terminal" && (
         <AuthenticatedPlaceholder snapshot={state.snapshot} onSignOut={signOut} />
       )}
 

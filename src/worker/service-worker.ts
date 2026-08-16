@@ -42,10 +42,17 @@ import {
   parseChallenge,
   parseInvitationDetails,
 } from "./acceptance";
+import {
+  createChallengeLifecycleCommandAdapter,
+  parseChallenge as parseLifecycleChallenge,
+  projectChallenge,
+  type ChallengeLifecycleRpc,
+} from "./challenge";
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
 const LAST_INVITATION_ID_KEY = "invitation.lastId";
+const LAST_CHALLENGE_ID_KEY = "challenge.lastId";
 
 type FoundationHealth = {
   service: "larp-code";
@@ -169,11 +176,6 @@ const invitationCommandRpc: CreateInvitationRpc = {
     if (error) throw error;
     return data === null ? null : parseInvitationDetails(data);
   },
-  async getCommittedChallenge() {
-    const { data, error } = await client.rpc("get_committed_challenge_for_member_v1");
-    if (error) throw error;
-    return data === null ? null : parseChallenge(data);
-  },
 };
 
 async function callInvitationTerminalRpc(
@@ -210,6 +212,35 @@ const invitationTerminalRpc: InvitationTerminalRpc = {
     return data === null ? null : parseInvitation(data);
   },
 };
+const challengeLifecycleRpc: ChallengeLifecycleRpc = {
+  async cancelChallenge(input) {
+    const { data, error } = await client.rpc("cancel_challenge_v1", {
+      p_idempotency_key: input.idempotencyKey,
+      p_command_version: input.commandVersion,
+      p_command_kind: input.commandKind,
+      p_member_id: input.memberId,
+      p_member_email: input.memberEmail,
+      p_challenge_id: input.challengeId,
+    });
+    if (error) throw error;
+    return parseLifecycleChallenge(data);
+  },
+  async getCommittedChallenge() {
+    const { data, error } = await client.rpc("get_committed_challenge_for_member_v1");
+    if (error) throw error;
+    return data === null ? null : parseLifecycleChallenge(data);
+  },
+  async getChallenge(challengeId) {
+    const { data, error } = await client.rpc("get_challenge_v1", { p_challenge_id: challengeId });
+    if (error) throw error;
+    return data === null ? null : parseLifecycleChallenge(data);
+  },
+  async getLatestCanceledChallenge() {
+    const { data, error } = await client.rpc("get_latest_canceled_challenge_for_member_v1");
+    if (error) throw error;
+    return data === null ? null : parseLifecycleChallenge(data);
+  },
+};
 const displayNameCommands = createDisplayNameCommandAdapter({
   rpc: displayNameCommandRpc,
   storage: memberStorage,
@@ -237,6 +268,10 @@ const acceptanceCommands = createAcceptInvitationCommandAdapter({
 });
 const invitationTerminalCommands = createInvitationTerminalCommandAdapter({
   rpc: invitationTerminalRpc,
+  storage: memberStorage,
+});
+const challengeCommands = createChallengeLifecycleCommandAdapter({
+  rpc: challengeLifecycleRpc,
   storage: memberStorage,
 });
 const bootId = crypto.randomUUID();
@@ -299,10 +334,16 @@ function snapshotMetadata(health: FoundationHealth, worker: WorkerEvidence, pend
   };
 }
 
-async function buildScheduledSnapshot(challenge: ChallengeSnapshot): Promise<AppSnapshot> {
+async function buildChallengeSnapshot(challenge: ChallengeSnapshot): Promise<AppSnapshot> {
   const health = await readFoundationHealth();
   const worker = await workerEvidencePromise;
-  return { ...snapshotMetadata(health, worker, null), kind: "scheduled", challenge };
+  const projection = projectChallenge(challenge, health.serverTime);
+  return {
+    ...snapshotMetadata(health, worker, null),
+    kind: projection.kind,
+    challenge: projection.challenge,
+    actions: projection.actions,
+  };
 }
 
 type AuthenticatedMember = {
@@ -331,10 +372,12 @@ type CommandResult =
   | { kind: "update_display_name"; result: Awaited<ReturnType<typeof displayNameCommands.updateDisplayName>> }
   | { kind: "create_invitation"; result: Awaited<ReturnType<typeof invitationCommands.createInvitation>> }
   | { kind: "accept_invitation"; result: Awaited<ReturnType<typeof acceptanceCommands.acceptInvitation>> }
-  | { kind: "revoke_invitation" | "decline_invitation"; result: Awaited<ReturnType<typeof invitationTerminalCommands.revokeInvitation>> };
+  | { kind: "revoke_invitation" | "decline_invitation"; result: Awaited<ReturnType<typeof invitationTerminalCommands.revokeInvitation>> }
+  | { kind: "cancel_challenge"; result: Awaited<ReturnType<typeof challengeCommands.cancelChallenge>> };
 type AppliedInvitationCommand = Extract<CommandResult, { kind: "create_invitation" | "revoke_invitation" | "decline_invitation" }>;
 type AppliedInvitationResult = Extract<AppliedInvitationCommand["result"], { status: "applied" }>;
 type AppliedAcceptanceResult = Extract<Extract<CommandResult, { kind: "accept_invitation" }>['result'], { status: "applied" }>;
+type AppliedChallengeResult = Extract<Extract<CommandResult, { kind: "cancel_challenge" }>['result'], { status: "applied" }>;
 function invitationSnapshot(
   health: FoundationHealth,
   worker: WorkerEvidence,
@@ -359,7 +402,7 @@ async function rememberInvitation(invitationId: string): Promise<void> {
 
 async function respondToCommand(
   command: CommandResult,
-  buildAppliedSnapshot?: (result: AppliedInvitationResult | AppliedAcceptanceResult) => Promise<AppSnapshot>,
+  buildAppliedSnapshot?: (result: AppliedInvitationResult | AppliedAcceptanceResult | AppliedChallengeResult) => Promise<AppSnapshot>,
 ): Promise<PopupResponse> {
   let snapshot: AppSnapshot;
   try {
@@ -398,6 +441,9 @@ async function respondToCommand(
       command.result as AppliedInvitationResult,
     );
   }
+  if (command.kind === "cancel_challenge" && buildAppliedSnapshot) {
+    snapshot = await buildAppliedSnapshot(command.result as AppliedChallengeResult);
+  }
   return {
     ok: true,
     snapshot,
@@ -429,6 +475,7 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     await invitationCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
     await acceptanceCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
     await invitationTerminalCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
+    await challengeCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
   }
   const account = await memberAccount.getMemberAccount();
   if (!account) {
@@ -440,7 +487,8 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
   const pendingCommand = await displayNameCommands.readPending()
     ?? await invitationCommands.readPending()
     ?? await acceptanceCommands.readPending()
-    ?? await invitationTerminalCommands.readPending();
+    ?? await invitationTerminalCommands.readPending()
+    ?? await challengeCommands.readPending();
   const incomingDetails = await invitationCommandRpc.getPendingInvitationDetails?.();
   if (incomingDetails) {
     const { invitation, ...details } = incomingDetails;
@@ -483,10 +531,31 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     }
     await extensionStorage.remove(LAST_INVITATION_ID_KEY);
   }
-  const committedChallenge = await invitationCommandRpc.getCommittedChallenge?.();
-  if (committedChallenge) {
-    return { ...snapshotMetadata(health, worker, pendingCommand), kind: "scheduled", challenge: committedChallenge };
+  const rememberedChallengeId = await extensionStorage.get(LAST_CHALLENGE_ID_KEY);
+  if (typeof rememberedChallengeId === "string") {
+    try {
+      const rememberedChallenge = await challengeLifecycleRpc.getChallenge?.(rememberedChallengeId);
+      if (rememberedChallenge?.status === "canceled") {
+        return buildChallengeSnapshot(rememberedChallenge);
+      }
+    } catch {
+      // A changed browser identity or a removed Challenge must not leak or
+      // block the current Member's account Snapshot.
+    }
+    await extensionStorage.remove(LAST_CHALLENGE_ID_KEY);
   }
+  const committedChallenge = await challengeLifecycleRpc.getCommittedChallenge?.();
+  if (committedChallenge) {
+    const projection = projectChallenge(committedChallenge, health.serverTime);
+    return {
+      ...snapshotMetadata(health, worker, pendingCommand),
+      kind: projection.kind,
+      challenge: projection.challenge,
+      actions: projection.actions,
+    };
+  }
+  const latestCanceledChallenge = await challengeLifecycleRpc.getLatestCanceledChallenge?.();
+  if (latestCanceledChallenge) return buildChallengeSnapshot(latestCanceledChallenge);
   const metadata = snapshotMetadata(health, worker, pendingCommand);
   return { ...metadata, kind: "account", account };
 }
@@ -612,7 +681,20 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           const result = await acceptanceCommands.acceptInvitation(invitation, identity);
           return respondToCommand(
             { kind: "accept_invitation", result },
-            async (applied) => buildScheduledSnapshot((applied as AppliedAcceptanceResult).challenge),
+            async (applied) => buildChallengeSnapshot((applied as AppliedAcceptanceResult).challenge),
+          );
+        });
+      }
+      case "cancel_challenge": {
+        return withAuthenticatedMember(async ({ identity }) => {
+          const result = await challengeCommands.cancelChallenge(request.challengeId, identity);
+          return respondToCommand(
+            { kind: "cancel_challenge", result },
+            async (applied) => {
+              const challenge = (applied as AppliedChallengeResult).challenge;
+              await extensionStorage.set(LAST_CHALLENGE_ID_KEY, challenge.id);
+              return buildChallengeSnapshot(challenge);
+            },
           );
         });
       }
