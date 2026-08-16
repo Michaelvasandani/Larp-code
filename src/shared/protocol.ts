@@ -19,7 +19,8 @@ export type TransactionCommandKind =
   | "accept_invitation"
   | "revoke_invitation"
   | "decline_invitation"
-  | "cancel_challenge";
+  | "cancel_challenge"
+  | "create_solve";
 
 type PendingCommandBase = {
   version: TransactionCommandVersion;
@@ -61,6 +62,10 @@ export type PendingCommand =
   | (PendingCommandBase & {
       kind: "cancel_challenge";
       intent: { challengeId: string };
+    })
+  | (PendingCommandBase & {
+      kind: "create_solve";
+      intent: { challengeId: string; problemId: string; affirmed: true };
     });
 
 export type CommandOutcome =
@@ -163,6 +168,41 @@ export type InvitationAction = "accept" | "decline" | "revoke";
 export type ChallengeStatus = "scheduled" | "active" | "canceled";
 export type ChallengeAction = "cancel" | "solve";
 
+export type ActivePaceStatus = "behind" | "on_pace_today" | "todays_pace_met";
+export type ActivePetCondition = "healthy" | "hungry" | "sad" | "deteriorated";
+export type ActiveEvolutionStage = 1 | 2 | 3 | 4;
+
+export type ActiveMemberProgress = Readonly<{
+  memberId: string;
+  email: string;
+  displayName: string;
+  authority: "equal";
+  creditedTotal: number;
+  paceStatus: ActivePaceStatus;
+  paceGap: Readonly<{
+    previousTarget: number;
+    currentTarget: number;
+    gapToPreviousTarget: number;
+    amountNeededToday: number;
+    amountAhead: number;
+    copy: string;
+  }>;
+}>;
+
+export type ActiveChallengeProgress = Readonly<{
+  problemSetVersionId: string;
+  day: number;
+  durationDays: number;
+  expectedProgress: number;
+  previousExpectedProgress: number;
+  earlierExpectedProgress: number;
+  pairProgress: number;
+  petCondition: ActivePetCondition;
+  currentEvolutionStage: ActiveEvolutionStage;
+  highestEvolutionStage: ActiveEvolutionStage;
+  members: readonly ActiveMemberProgress[];
+}>;
+
 export type InvitationSnapshot = SnapshotMetadata & {
   kind: "invitation";
   invitation: Invitation;
@@ -180,6 +220,7 @@ export type ScheduledSnapshot = SnapshotMetadata & {
 export type ActiveSnapshot = SnapshotMetadata & {
   kind: "active";
   challenge: ChallengeSnapshot;
+  progress: ActiveChallengeProgress;
   actions?: readonly ChallengeAction[];
 };
 
@@ -235,6 +276,8 @@ export type ChallengeSnapshot = Readonly<{
   createdAt: string;
   terminalActorId?: string | null;
   terminalAt?: string | null;
+  /** Present only when the authoritative Challenge is Active. */
+  progress?: ActiveChallengeProgress;
   members: readonly Readonly<{
     memberId: string;
     email: string;
@@ -320,6 +363,13 @@ export type PopupRequest =
     }
   | {
       version: ProtocolVersion;
+      type: "credit_solve";
+      challengeId: string;
+      problemId: string;
+      affirmed: boolean;
+    }
+  | {
+      version: ProtocolVersion;
       type: "sign_out";
     };
 
@@ -341,7 +391,7 @@ export type PopupResponse =
   | { ok: false; error: ProtocolError };
 
 export type WorkerEvent =
-  | { version: ProtocolVersion; type: "snapshot_invalidated"; snapshot: AppSnapshot }
+  | { version: ProtocolVersion; type: "snapshot_invalidated" }
   | { version: ProtocolVersion; type: "realtime_status"; status: "connecting" | "subscribed" | "closed" | "error" };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -412,6 +462,10 @@ export function isChallengeSnapshot(value: unknown): value is ChallengeSnapshot 
     "id", "invitationId", "timeZone", "startDate", "deadlineDate", "problemSetVersionId", "status", "createdAt", "members",
   ]) && !hasExactKeys(value, [
     "id", "invitationId", "timeZone", "startDate", "deadlineDate", "problemSetVersionId", "status", "createdAt", "members", "terminalActorId", "terminalAt",
+  ]) && !hasExactKeys(value, [
+    "id", "invitationId", "timeZone", "startDate", "deadlineDate", "problemSetVersionId", "status", "createdAt", "members", "progress",
+  ]) && !hasExactKeys(value, [
+    "id", "invitationId", "timeZone", "startDate", "deadlineDate", "problemSetVersionId", "status", "createdAt", "members", "terminalActorId", "terminalAt", "progress",
   ])) return false;
   if (!isString(value.id) || !isString(value.invitationId) || !isString(value.timeZone)
     || !/^\d{4}-\d{2}-\d{2}$/.test(String(value.startDate))
@@ -423,7 +477,8 @@ export function isChallengeSnapshot(value: unknown): value is ChallengeSnapshot 
   return value.members.every((member) => isRecord(member)
     && hasExactKeys(member, ["memberId", "email", "displayName", "authority"])
     && isString(member.memberId) && isString(member.email) && isString(member.displayName)
-    && member.authority === "equal");
+    && member.authority === "equal")
+    && (!('progress' in value) || isActiveProgress(value.progress));
 }
 
 export function parseInvitationDetails(value: unknown): InvitationDetailsRecord {
@@ -448,6 +503,42 @@ function isChallengeActions(value: unknown): value is readonly ChallengeAction[]
   return Array.isArray(value) && value.every((action) => action === "cancel" || action === "solve");
 }
 
+function isActiveProgress(value: unknown): value is ActiveChallengeProgress {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "problemSetVersionId", "day", "durationDays", "expectedProgress", "previousExpectedProgress",
+    "earlierExpectedProgress", "pairProgress", "petCondition", "currentEvolutionStage",
+    "highestEvolutionStage", "members",
+  ])) return false;
+  if (!isString(value.problemSetVersionId)
+    || typeof value.day !== "number" || !Number.isInteger(value.day)
+    || typeof value.durationDays !== "number" || !Number.isInteger(value.durationDays) || value.durationDays < 1
+    || value.day < 0 || value.day > value.durationDays + 1
+    || typeof value.expectedProgress !== "number" || !Number.isInteger(value.expectedProgress) || value.expectedProgress < 0 || value.expectedProgress > 150
+    || typeof value.previousExpectedProgress !== "number" || !Number.isInteger(value.previousExpectedProgress) || value.previousExpectedProgress < 0 || value.previousExpectedProgress > 150
+    || typeof value.earlierExpectedProgress !== "number" || !Number.isInteger(value.earlierExpectedProgress) || value.earlierExpectedProgress < 0 || value.earlierExpectedProgress > 150
+    || typeof value.pairProgress !== "number" || value.pairProgress < 0 || value.pairProgress > 150
+    || !["healthy", "hungry", "sad", "deteriorated"].includes(String(value.petCondition))
+    || ![1, 2, 3, 4].includes(Number(value.currentEvolutionStage))
+    || ![1, 2, 3, 4].includes(Number(value.highestEvolutionStage))
+    || !Array.isArray(value.members) || value.members.length !== 2) return false;
+  return value.members.every((member) => {
+    if (!isRecord(member) || !hasExactKeys(member, [
+      "memberId", "email", "displayName", "authority", "creditedTotal", "paceStatus", "paceGap",
+    ])) return false;
+    if (!isString(member.memberId) || !isString(member.email) || !isString(member.displayName)
+      || member.authority !== "equal" || typeof member.creditedTotal !== "number" || !Number.isInteger(member.creditedTotal)
+      || member.creditedTotal < 0 || member.creditedTotal > 150 || !["behind", "on_pace_today", "todays_pace_met"].includes(String(member.paceStatus))) return false;
+    const paceGap = member.paceGap;
+    return isRecord(paceGap)
+      && hasExactKeys(paceGap, [
+        "previousTarget", "currentTarget", "gapToPreviousTarget", "amountNeededToday", "amountAhead", "copy",
+      ])
+      && ["previousTarget", "currentTarget", "gapToPreviousTarget", "amountNeededToday", "amountAhead"]
+        .every((key) => typeof paceGap[key] === "number" && Number.isInteger(paceGap[key] as number))
+      && isString(paceGap.copy);
+  });
+}
+
 export function isPendingCommand(value: unknown): value is PendingCommand {
   if (!isRecord(value) || !hasExactKeys(value, [
     "version",
@@ -459,7 +550,7 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
     "requestedAt",
   ])) return false;
   if (value.version !== TRANSACTION_COMMAND_VERSION
-    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge"].includes(String(value.kind))
+    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "create_solve"].includes(String(value.kind))
     || !isString(value.idempotencyKey) || !isString(value.memberId)
     || !isString(value.memberEmail) || !isString(value.requestedAt)) return false;
   if (!isRecord(value.intent)) return false;
@@ -475,13 +566,17 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
     && typeof value.intent.problemSetVersionId === "string";
   if (value.kind === "cancel_challenge") return hasExactKeys(value.intent, ["challengeId"])
     && typeof value.intent.challengeId === "string";
+  if (value.kind === "create_solve") return hasExactKeys(value.intent, ["challengeId", "problemId", "affirmed"])
+    && typeof value.intent.challengeId === "string"
+    && typeof value.intent.problemId === "string"
+    && value.intent.affirmed === true;
   return hasExactKeys(value.intent, ["invitationId"])
     && typeof value.intent.invitationId === "string";
 }
 
 export function isCommandOutcome(value: unknown): value is CommandOutcome {
   if (!isRecord(value) || typeof value.status !== "string"
-    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge"].includes(String(value.kind))) return false;
+    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "create_solve"].includes(String(value.kind))) return false;
   if (value.status === "applied") {
     return hasExactKeys(value, ["status", "kind", "idempotencyKey"]) && isString(value.idempotencyKey);
   }
@@ -529,6 +624,10 @@ function isSnapshot(value: unknown): value is AppSnapshot {
     && !hasExactKeys(value, [...keys, "challenge", "pendingCommand"])
     && !hasExactKeys(value, [...keys, "challenge", "actions"])
     && !hasExactKeys(value, [...keys, "challenge", "actions", "pendingCommand"])
+    && !hasExactKeys(value, [...keys, "challenge", "progress"])
+    && !hasExactKeys(value, [...keys, "challenge", "progress", "pendingCommand"])
+    && !hasExactKeys(value, [...keys, "challenge", "progress", "actions"])
+    && !hasExactKeys(value, [...keys, "challenge", "progress", "actions", "pendingCommand"])
     && !hasExactKeys(value, [...keys, "actions"])
     && !hasExactKeys(value, [...keys, "actions", "pendingCommand"])) return false;
   if (value.contractVersion !== PROTOCOL_VERSION || !isString(value.authoritativeServerTime) || !isWorkerEvidence(value.worker)) {
@@ -571,8 +670,13 @@ function isSnapshot(value: unknown): value is AppSnapshot {
       && (!('actions' in value) || isChallengeActions(value.actions));
   }
   if (value.kind === "active") {
-    return hasOptionalPendingAndActions([...keys, "challenge"])
+    const activeShape = hasOptionalPending([...keys, "challenge", "progress"])
+      || hasExactKeys(value, [...keys, "challenge", "progress", "actions"])
+      || hasExactKeys(value, [...keys, "challenge", "progress", "pendingCommand"])
+      || hasExactKeys(value, [...keys, "challenge", "progress", "actions", "pendingCommand"]);
+    return activeShape
       && isChallengeSnapshot(value.challenge)
+      && isActiveProgress(value.progress)
       && (!('actions' in value) || isChallengeActions(value.actions));
   }
   if (value.kind === "terminal") {
@@ -613,6 +717,10 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
   }
   if (value.type === "cancel_challenge") {
     return hasExactKeys(value, ["version", "type", "challengeId"]) && isString(value.challengeId);
+  }
+  if (value.type === "credit_solve") {
+    return hasExactKeys(value, ["version", "type", "challengeId", "problemId", "affirmed"])
+      && isString(value.challengeId) && isString(value.problemId) && value.affirmed === true;
   }
   return value.type === "verify_email_otp"
     && hasExactKeys(value, ["version", "type", "email", "token"])

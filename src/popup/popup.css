@@ -216,6 +216,27 @@ input:focus {
 
 .primary-button:disabled { cursor: default; opacity: .7; }
 
+.pet-panel {
+  margin: 14px 0 20px;
+  padding: 20px;
+  border: 1px solid #d9d1bd;
+  border-radius: 16px;
+  background: #f6f0df;
+  text-align: center;
+}
+
+.pet-panel.pet-healthy { background: #edf5e8; }
+.pet-panel.pet-sad { background: #f5ece4; }
+.pet-panel.pet-deteriorated { background: #eee8e6; }
+.pet-condition { margin: 0; font-size: 20px; font-weight: 800; text-transform: capitalize; }
+.pet-stage, .pair-progress { margin: 6px 0 0; }
+.pair-progress { font-size: 16px; font-weight: 800; }
+.member-progress-list { display: grid; gap: 10px; }
+.member-progress { padding: 12px; border: 1px solid #e7e2d7; border-radius: 10px; }
+.member-progress h4, .member-progress p { margin: 0 0 4px; }
+.member-total { font-size: 18px; font-weight: 800; }
+select { width: 100%; padding: 10px; border: 1px solid #c9c2b4; border-radius: 8px; background: #fffdf9; }
+
 .text-button {
   padding: 10px;
   border: 0;

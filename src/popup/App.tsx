@@ -12,6 +12,7 @@ import {
   type SignInState,
 } from "../shared/protocol";
 import { DISPLAY_NAME_MAX_LENGTH, stripDisplayNameControlCharacters } from "../worker/member-account";
+import { PINNED_PROBLEM_SET_VERSION } from "../catalog/problem-set";
 
 type LoadState =
   | { status: "loading" }
@@ -591,15 +592,85 @@ function ScheduledView({ snapshot, onSignOut, onCancel, commandOutcome }: {
   );
 }
 
-function ActiveView({ snapshot, onSignOut, commandOutcome }: { snapshot: Extract<AppSnapshot, { kind: "active" }>; onSignOut: () => Promise<void>; commandOutcome?: CommandOutcome }) {
+function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
+  snapshot: Extract<AppSnapshot, { kind: "active" }>;
+  onSignOut: () => Promise<void>;
+  onAction: (request: PopupRequest) => Promise<void>;
+  commandOutcome?: CommandOutcome;
+}) {
+  const progress = snapshot.progress ?? snapshot.challenge.progress;
+  const [selectedProblemId, setSelectedProblemId] = useState("");
+  const [affirmed, setAffirmed] = useState(false);
+  const [isSubmitting, setSubmitting] = useState(false);
+  const pending = Boolean(snapshot.pendingCommand) || commandOutcome?.status === "uncertain";
+  const canCreditSolve = snapshot.actions?.includes("solve") ?? false;
+  const selectedProblem = PINNED_PROBLEM_SET_VERSION.problems.find((problem) => problem.id === selectedProblemId);
+
+  async function creditSolve(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!progress || !selectedProblem || !affirmed || pending || isSubmitting) return;
+    setSubmitting(true);
+    try {
+      await onAction({
+        version: PROTOCOL_VERSION,
+        type: "credit_solve",
+        challengeId: snapshot.challenge.id,
+        problemId: selectedProblem.id,
+        affirmed: true,
+      });
+      setSelectedProblemId("");
+      setAffirmed(false);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!progress) {
+    return <section className="state-card" role="alert"><h2>Active state is unavailable</h2><p>Refresh to receive a complete authoritative Snapshot.</p></section>;
+  }
   return (
     <section className="state-card" aria-labelledby="active-title">
-      <p className="eyebrow">ACTIVE CHALLENGE</p>
-      <h2 id="active-title">Your shared Challenge is active</h2>
+      <p className="eyebrow">ACTIVE CHALLENGE · PET</p>
+      <h2 id="active-title">Your Grovekin is {progress.petCondition}</h2>
+      <div className={`pet-panel pet-${progress.petCondition}`} aria-label="Pet state">
+        <p className="pet-condition">{progress.petCondition}</p>
+        <p className="pet-stage">Evolution Stage {progress.currentEvolutionStage}</p>
+        <p className="pair-progress">Pair Progress {progress.pairProgress} / 150</p>
+      </div>
+      <h3>Both Members’ pace</h3>
+      <div className="member-progress-list">
+        {progress.members.map((member) => (
+          <article key={member.memberId} className="member-progress">
+            <h4>{member.displayName}</h4>
+            <p className="member-total">{member.creditedTotal} / 150</p>
+            <p>{member.paceStatus === "behind" ? "Behind" : member.paceStatus === "on_pace_today" ? "On Pace Today" : "Today’s Pace Met"}</p>
+            <p className="field-help">{member.paceGap.copy}</p>
+          </article>
+        ))}
+      </div>
+      <p className="field-help">Current shared target: {progress.expectedProgress} / 150. Evidence is self-reported and self-attested; no platform access or independent check is used.</p>
+      {canCreditSolve ? <form onSubmit={creditSolve} aria-describedby="solve-help solve-status">
+        <h3>Credit my solve</h3>
+        <p id="solve-help" className="field-help">Choose one Problem from pinned version {progress.problemSetVersionId}, then affirm that you completed or recompleted it during this Active Challenge.</p>
+        <label htmlFor="solve-problem">Problem</label>
+        <select id="solve-problem" value={selectedProblemId} onChange={(event) => setSelectedProblemId(event.target.value)} disabled={pending || isSubmitting} required>
+          <option value="">Select a pinned Problem</option>
+          {PINNED_PROBLEM_SET_VERSION.id === progress.problemSetVersionId && PINNED_PROBLEM_SET_VERSION.problems.map((problem) => (
+            <option key={problem.id} value={problem.id}>{problem.listOrder}. {problem.title}</option>
+          ))}
+        </select>
+        <label className="check-row">
+          <input type="checkbox" checked={affirmed} onChange={(event) => setAffirmed(event.target.checked)} disabled={pending || isSubmitting} required />
+          <span>I completed or recompleted this Problem during the Active Challenge.</span>
+        </label>
+        {selectedProblem && <a href={selectedProblem.publicUrl} target="_blank" rel="noreferrer">Open ordinary public Problem link</a>}
+        {commandOutcome?.status === "rejected" && <p id="solve-status" className="auth-status error-status" role="alert">{commandOutcome.message}</p>}
+        {pending && <p id="solve-status" className="auth-status" role="status">Checking whether this completed. Refresh to reconcile the authoritative Snapshot.</p>}
+        <button type="submit" className="primary-button" disabled={pending || isSubmitting || !selectedProblemId || !affirmed}>
+          {isSubmitting ? "Crediting solve…" : "Credit my solve"}
+        </button>
+      </form> : <p role="status">The Challenge deadline has passed. New Solves are no longer accepted.</p>}
       <ChallengeTerms challenge={snapshot.challenge} />
-      <p>Both Members have equal authority and see the shared record.</p>
-      {commandOutcome?.status === "rejected" && <p className="auth-status error-status" role="alert">{commandOutcome.message}</p>}
-      {snapshot.actions?.includes("solve") && <button type="button" className="primary-button" disabled>Solve Challenge</button>}
       <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
       <SnapshotDetails snapshot={snapshot} />
     </section>
@@ -624,6 +695,7 @@ export function App() {
   const [authState, setAuthState] = useState<SignInState>(defaultSignInState);
   const [setupError, setSetupError] = useState<string | undefined>();
   const [commandOutcome, setCommandOutcome] = useState<CommandOutcome | undefined>();
+  const [realtimeStatus, setRealtimeStatus] = useState<"connecting" | "subscribed" | "closed" | "error">("connecting");
 
   const loadSnapshot = useCallback(() => {
     setState({ status: "loading" });
@@ -712,7 +784,21 @@ export function App() {
   useEffect(() => {
     const port = chrome.runtime.connect({ name: `larp-code-popup-v${PROTOCOL_VERSION}` });
     loadSnapshot();
-    return () => port.disconnect();
+    const onWorkerEvent = (message: unknown) => {
+      if (!message || typeof message !== "object") return;
+      const event = message as { version?: number; type?: string; status?: typeof realtimeStatus };
+      if (event.version !== PROTOCOL_VERSION) return;
+      if (event.type === "snapshot_invalidated") loadSnapshot();
+      if (event.type === "realtime_status" && event.status) setRealtimeStatus(event.status);
+    };
+    port.onMessage.addListener(onWorkerEvent);
+    const onFocus = () => loadSnapshot();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      port.onMessage.removeListener(onWorkerEvent);
+      port.disconnect();
+    };
   }, [loadSnapshot]);
 
   return (
@@ -771,7 +857,7 @@ export function App() {
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "active" && (
-        <ActiveView snapshot={state.snapshot} onSignOut={signOut} commandOutcome={commandOutcome} />
+        <ActiveView snapshot={state.snapshot} onSignOut={signOut} onAction={sendAuthAction} commandOutcome={commandOutcome} />
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "terminal" && (
@@ -791,6 +877,7 @@ export function App() {
 
       <footer>
         <span>Fresh worker snapshot</span>
+        {realtimeStatus !== "subscribed" && <span role="status">Live updates paused</span>}
         {state.status === "loaded" && <span>{state.snapshot.authoritativeServerTime}</span>}
       </footer>
     </main>

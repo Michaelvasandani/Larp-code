@@ -65,10 +65,12 @@ export function projectChallenge(
   authoritativeNow: string,
 ): ChallengeProjection {
   const status = effectiveChallengeStatus(challenge, authoritativeNow);
+  const solveWindowOpen = status === "active"
+    && dateInTimeZone(authoritativeNow, challenge.timeZone) <= challenge.deadlineDate;
   return {
     challenge: status === challenge.status ? challenge : { ...challenge, status },
     status,
-    actions: challengeActionsForStatus(status),
+    actions: status === "active" && !solveWindowOpen ? [] : challengeActionsForStatus(status),
     kind: status === "scheduled" || status === "active" ? status : "terminal",
   };
 }

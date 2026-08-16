@@ -273,6 +273,104 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     expect(stillCommitted.error).toBeNull();
     expect(stillCommitted.data).toHaveLength(2);
   });
+
+  it("credits one pinned self-attested Solve per Member, retries idempotently, and rejects time-window violations", async () => {
+    admin = createClient(credentials!.url, credentials!.serviceKey);
+    const inviter = await profile("SolveInviter");
+    const invitee = await profile("SolveInvitee");
+    const today = new Date().toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.parse(`${today}T00:00:00.000Z`) + 86_400_000).toISOString().slice(0, 10);
+    const yesterday = new Date(Date.parse(`${today}T00:00:00.000Z`) - 86_400_000).toISOString().slice(0, 10);
+
+    async function seededChallenge(startDate: string, deadlineDate: string, status: "scheduled" | "active") {
+      const invitation = await admin.from("invitations").insert({
+        inviter_id: inviter.id,
+        invited_email: invitee.email,
+        challenge_time_zone: "UTC",
+        start_date: startDate,
+        deadline_date: deadlineDate,
+        problem_set_version_id: "neetcode-150-2026-08-15",
+        status: "accepted",
+      }).select("id").single();
+      expect(invitation.error).toBeNull();
+      const challenge = await admin.from("challenges").insert({
+        invitation_id: invitation.data!.id,
+        inviter_id: inviter.id,
+        invited_member_id: invitee.id,
+        challenge_time_zone: "UTC",
+        start_date: startDate,
+        deadline_date: deadlineDate,
+        problem_set_version_id: "neetcode-150-2026-08-15",
+        status,
+      }).select("id").single();
+      expect(challenge.error).toBeNull();
+      const members = await admin.from("challenge_members").insert([
+        { challenge_id: challenge.data!.id, member_id: inviter.id, member_email: inviter.email, display_name: "SolveInviter" },
+        { challenge_id: challenge.data!.id, member_id: invitee.id, member_email: invitee.email, display_name: "SolveInvitee" },
+      ]);
+      expect(members.error).toBeNull();
+      return challenge.data!.id as string;
+    }
+
+    const activeChallengeId = await seededChallenge(today, tomorrow, "active");
+    const firstKey = crypto.randomUUID();
+    const first = await inviter.client.rpc("create_solve_v1", {
+      p_idempotency_key: firstKey,
+      p_command_version: 1,
+      p_command_kind: "create_solve",
+      p_member_id: inviter.id,
+      p_member_email: inviter.email,
+      p_challenge_id: activeChallengeId,
+      p_problem_id: "problem:0217-contains-duplicate",
+      p_affirmed: true,
+    });
+    expect(first.error).toBeNull();
+    expect(first.data).toMatchObject({ memberId: inviter.id, challengeId: activeChallengeId, creditStatus: "credited" });
+    const replay = await inviter.client.rpc("create_solve_v1", {
+      p_idempotency_key: firstKey,
+      p_command_version: 1,
+      p_command_kind: "create_solve",
+      p_member_id: inviter.id,
+      p_member_email: inviter.email,
+      p_challenge_id: activeChallengeId,
+      p_problem_id: "problem:0217-contains-duplicate",
+      p_affirmed: true,
+    });
+    expect(replay.error).toBeNull();
+    expect(replay.data).toEqual(first.data);
+    const duplicate = await inviter.client.rpc("create_solve_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "create_solve",
+      p_member_id: inviter.id, p_member_email: inviter.email, p_challenge_id: activeChallengeId,
+      p_problem_id: "problem:0217-contains-duplicate", p_affirmed: true,
+    });
+    expect(duplicate.error?.code).toBe("P0003");
+    const partner = await invitee.client.rpc("create_solve_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "create_solve",
+      p_member_id: invitee.id, p_member_email: invitee.email, p_challenge_id: activeChallengeId,
+      p_problem_id: "problem:0217-contains-duplicate", p_affirmed: true,
+    });
+    expect(partner.error).toBeNull();
+    const active = await inviter.client.rpc("get_challenge_v1", { p_challenge_id: activeChallengeId });
+    expect(active.error).toBeNull();
+    expect(active.data.progress).toMatchObject({ pairProgress: 1, petCondition: "hungry" });
+    expect(active.data.progress.members.map((member: { creditedTotal: number }) => member.creditedTotal).sort()).toEqual([1, 1]);
+
+    const scheduledChallengeId = await seededChallenge(tomorrow, tomorrow, "scheduled");
+    const beforeStart = await inviter.client.rpc("create_solve_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "create_solve",
+      p_member_id: inviter.id, p_member_email: inviter.email, p_challenge_id: scheduledChallengeId,
+      p_problem_id: "problem:0242-valid-anagram", p_affirmed: true,
+    });
+    expect(beforeStart.error?.code).toBe("P0003");
+
+    const expiredChallengeId = await seededChallenge(yesterday, yesterday, "active");
+    const afterDeadline = await inviter.client.rpc("create_solve_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "create_solve",
+      p_member_id: inviter.id, p_member_email: inviter.email, p_challenge_id: expiredChallengeId,
+      p_problem_id: "problem:0242-valid-anagram", p_affirmed: true,
+    });
+    expect(afterDeadline.error?.code).toBe("P0003");
+  });
 });
 
 void acceptanceDb;

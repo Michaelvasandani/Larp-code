@@ -138,6 +138,51 @@ describe("versioned popup/worker protocol", () => {
     expect(isPopupResponse({ ok: true, snapshot: { ...invitationSnapshot, invitation: undefined } })).toBe(false);
   });
 
+  it("requires authoritative Active progress and accepts an explicit solve affirmation", () => {
+    const progress = {
+      problemSetVersionId: "version-a",
+      day: 1,
+      durationDays: 30,
+      expectedProgress: 5,
+      previousExpectedProgress: 0,
+      earlierExpectedProgress: 0,
+      pairProgress: 0,
+      petCondition: "hungry" as const,
+      currentEvolutionStage: 1 as const,
+      highestEvolutionStage: 1 as const,
+      members: [
+        {
+          memberId: "member-1", email: "ada@example.test", displayName: "Ada", authority: "equal" as const,
+          creditedTotal: 0, paceStatus: "on_pace_today" as const,
+          paceGap: { previousTarget: 0, currentTarget: 5, gapToPreviousTarget: 0, amountNeededToday: 5, amountAhead: 0, copy: "5 more needed for today's target." },
+        },
+        {
+          memberId: "member-2", email: "grace@example.test", displayName: "Grace", authority: "equal" as const,
+          creditedTotal: 0, paceStatus: "on_pace_today" as const,
+          paceGap: { previousTarget: 0, currentTarget: 5, gapToPreviousTarget: 0, amountNeededToday: 5, amountAhead: 0, copy: "5 more needed for today's target." },
+        },
+      ],
+    };
+    const active = {
+      ...signedOutSnapshot,
+      kind: "active" as const,
+      challenge: {
+        id: "challenge-1", invitationId: "invitation-1", timeZone: "UTC", startDate: "2026-08-16", deadlineDate: "2026-09-14",
+        problemSetVersionId: "version-a", status: "active" as const, createdAt: "2026-08-15T00:00:00.000Z",
+        members: [
+          { memberId: "member-1", email: "ada@example.test", displayName: "Ada", authority: "equal" as const },
+          { memberId: "member-2", email: "grace@example.test", displayName: "Grace", authority: "equal" as const },
+        ],
+      },
+      progress,
+      actions: ["solve"] as const,
+    };
+    expect(isPopupResponse({ ok: true, snapshot: active })).toBe(true);
+    expect(isPopupResponse({ ok: true, snapshot: { ...active, progress: undefined } })).toBe(false);
+    expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "credit_solve", challengeId: "challenge-1", problemId: "problem:1", affirmed: true })).toBe(true);
+    expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "credit_solve", challengeId: "challenge-1", problemId: "problem:1", affirmed: false })).toBe(false);
+  });
+
   it("accepts authenticated Invitation details and a complete scheduled Challenge", () => {
     const details = {
       problemSetVersion: {

@@ -5,6 +5,7 @@ import {
   createChallengeLifecycleCommandAdapter,
   effectiveChallengeStatus,
   challengeActionsForStatus,
+  projectChallenge,
   type ChallengeRecord,
 } from "../src/worker/challenge";
 import { PENDING_COMMAND_KEY, type PendingCommandStorage } from "../src/worker/command-recovery";
@@ -42,6 +43,12 @@ describe("Scheduled Challenge lifecycle seam", () => {
     expect(challengeActionsForStatus("scheduled")).toEqual(["cancel"]);
     expect(challengeActionsForStatus("active")).toEqual(["solve"]);
     expect(challengeActionsForStatus("canceled")).toEqual([]);
+  });
+
+  it("removes the solve action at the inclusive deadline boundary", () => {
+    const active = { ...scheduled, status: "active" as const };
+    expect(projectChallenge(active, "2026-09-14T23:59:59.999Z").actions).toEqual(["solve"]);
+    expect(projectChallenge(active, "2026-09-15T07:00:00.000Z").actions).toEqual([]);
   });
 
   it("uses authoritative instants independently of device clock and locale", () => {

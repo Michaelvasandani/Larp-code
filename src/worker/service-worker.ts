@@ -11,6 +11,7 @@ import {
   type PopupResponse,
   type ProtocolError,
   type WorkerEvidence,
+  type WorkerEvent,
 } from "../shared/protocol";
 import { PINNED_PROBLEM_SET_VERSION } from "../catalog/problem-set";
 import {
@@ -48,6 +49,12 @@ import {
   projectChallenge,
   type ChallengeLifecycleRpc,
 } from "./challenge";
+import {
+  createSolveCommandAdapter,
+  parseSolve,
+  type SolveRpc,
+} from "./solve";
+import { createDebouncedSnapshotInvalidation } from "./realtime";
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
@@ -241,6 +248,22 @@ const challengeLifecycleRpc: ChallengeLifecycleRpc = {
     return data === null ? null : parseLifecycleChallenge(data);
   },
 };
+const solveRpc: SolveRpc = {
+  async createSolve(input) {
+    const { data, error } = await client.rpc("create_solve_v1", {
+      p_idempotency_key: input.idempotencyKey,
+      p_command_version: input.commandVersion,
+      p_command_kind: input.commandKind,
+      p_member_id: input.memberId,
+      p_member_email: input.memberEmail,
+      p_challenge_id: input.challengeId,
+      p_problem_id: input.problemId,
+      p_affirmed: input.affirmed,
+    });
+    if (error) throw error;
+    return parseSolve(data);
+  },
+};
 const displayNameCommands = createDisplayNameCommandAdapter({
   rpc: displayNameCommandRpc,
   storage: memberStorage,
@@ -274,11 +297,48 @@ const challengeCommands = createChallengeLifecycleCommandAdapter({
   rpc: challengeLifecycleRpc,
   storage: memberStorage,
 });
+const solveCommands = createSolveCommandAdapter({
+  rpc: solveRpc,
+  storage: memberStorage,
+});
 const bootId = crypto.randomUUID();
 const initialSessionStatePromise = authSessionAdapter.restoreSession();
 let pendingSnapshotSession: typeof initialSessionStatePromise | undefined = initialSessionStatePromise;
 const workerEvidencePromise = initializeWorkerEvidence();
 const popupPorts = new Set<chrome.runtime.Port>();
+let realtimeChannel: ReturnType<typeof client.channel> | null = null;
+
+function broadcastWorkerEvent(event: Extract<WorkerEvent, { version: typeof PROTOCOL_VERSION }>): void {
+  for (const port of popupPorts) {
+    try { port.postMessage(event); } catch { /* Popup closed between invalidation and delivery. */ }
+  }
+}
+
+const realtimeInvalidation = createDebouncedSnapshotInvalidation({
+  refetch: () => getAppSnapshot(),
+  // Realtime is an invalidation signal. The payload is deliberately never
+  // rendered as progress or Pet state by the popup.
+  onInvalidated: () => broadcastWorkerEvent({ version: PROTOCOL_VERSION, type: "snapshot_invalidated" }),
+});
+
+function startRealtime(): void {
+  if (realtimeChannel) return;
+  broadcastWorkerEvent({ version: PROTOCOL_VERSION, type: "realtime_status", status: "connecting" });
+  realtimeChannel = client.channel("larp-code-active-challenge")
+    .on("postgres_changes", { event: "*", schema: "public", table: "solves" }, realtimeInvalidation.invalidate)
+    .on("postgres_changes", { event: "*", schema: "public", table: "challenges" }, realtimeInvalidation.invalidate)
+    .subscribe((status) => {
+      const mapped = status === "SUBSCRIBED" ? "subscribed" : status === "CHANNEL_ERROR" ? "error" : status === "CLOSED" ? "closed" : "connecting";
+      broadcastWorkerEvent({ version: PROTOCOL_VERSION, type: "realtime_status", status: mapped });
+    });
+}
+
+function stopRealtime(): void {
+  realtimeInvalidation.dispose();
+  if (!realtimeChannel) return;
+  void client.removeChannel(realtimeChannel);
+  realtimeChannel = null;
+}
 
 async function initializeWorkerEvidence(): Promise<WorkerEvidence> {
   const stored = await chrome.storage.local.get(BOOT_COUNT_KEY);
@@ -338,12 +398,21 @@ async function buildChallengeSnapshot(challenge: ChallengeSnapshot): Promise<App
   const health = await readFoundationHealth();
   const worker = await workerEvidencePromise;
   const projection = projectChallenge(challenge, health.serverTime);
-  return {
-    ...snapshotMetadata(health, worker, null),
-    kind: projection.kind,
-    challenge: projection.challenge,
-    actions: projection.actions,
-  };
+  const metadata = snapshotMetadata(health, worker, null);
+  if (projection.status === "active") {
+    if (!projection.challenge.progress) throw new Error("The backend returned an Active Challenge without progress.");
+    return {
+      ...metadata,
+      kind: "active",
+      challenge: projection.challenge,
+      progress: projection.challenge.progress,
+      actions: projection.actions,
+    };
+  }
+  if (projection.status === "scheduled") {
+    return { ...metadata, kind: "scheduled", challenge: projection.challenge, actions: projection.actions };
+  }
+  return { ...metadata, kind: "terminal", challenge: projection.challenge, actions: projection.actions };
 }
 
 type AuthenticatedMember = {
@@ -373,11 +442,13 @@ type CommandResult =
   | { kind: "create_invitation"; result: Awaited<ReturnType<typeof invitationCommands.createInvitation>> }
   | { kind: "accept_invitation"; result: Awaited<ReturnType<typeof acceptanceCommands.acceptInvitation>> }
   | { kind: "revoke_invitation" | "decline_invitation"; result: Awaited<ReturnType<typeof invitationTerminalCommands.revokeInvitation>> }
-  | { kind: "cancel_challenge"; result: Awaited<ReturnType<typeof challengeCommands.cancelChallenge>> };
+  | { kind: "cancel_challenge"; result: Awaited<ReturnType<typeof challengeCommands.cancelChallenge>> }
+  | { kind: "create_solve"; result: Awaited<ReturnType<typeof solveCommands.createSolve>> };
 type AppliedInvitationCommand = Extract<CommandResult, { kind: "create_invitation" | "revoke_invitation" | "decline_invitation" }>;
 type AppliedInvitationResult = Extract<AppliedInvitationCommand["result"], { status: "applied" }>;
 type AppliedAcceptanceResult = Extract<Extract<CommandResult, { kind: "accept_invitation" }>['result'], { status: "applied" }>;
 type AppliedChallengeResult = Extract<Extract<CommandResult, { kind: "cancel_challenge" }>['result'], { status: "applied" }>;
+type AppliedSolveResult = Extract<Extract<CommandResult, { kind: "create_solve" }>['result'], { status: "applied" }>;
 function invitationSnapshot(
   health: FoundationHealth,
   worker: WorkerEvidence,
@@ -402,7 +473,7 @@ async function rememberInvitation(invitationId: string): Promise<void> {
 
 async function respondToCommand(
   command: CommandResult,
-  buildAppliedSnapshot?: (result: AppliedInvitationResult | AppliedAcceptanceResult | AppliedChallengeResult) => Promise<AppSnapshot>,
+  buildAppliedSnapshot?: (result: AppliedInvitationResult | AppliedAcceptanceResult | AppliedChallengeResult | AppliedSolveResult) => Promise<AppSnapshot>,
 ): Promise<PopupResponse> {
   let snapshot: AppSnapshot;
   try {
@@ -444,6 +515,9 @@ async function respondToCommand(
   if (command.kind === "cancel_challenge" && buildAppliedSnapshot) {
     snapshot = await buildAppliedSnapshot(command.result as AppliedChallengeResult);
   }
+  if (command.kind === "create_solve" && buildAppliedSnapshot) {
+    snapshot = await buildAppliedSnapshot(command.result as AppliedSolveResult);
+  }
   return {
     ok: true,
     snapshot,
@@ -476,6 +550,7 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     await acceptanceCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
     await invitationTerminalCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
     await challengeCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
+    await solveCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
   }
   const account = await memberAccount.getMemberAccount();
   if (!account) {
@@ -488,7 +563,8 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     ?? await invitationCommands.readPending()
     ?? await acceptanceCommands.readPending()
     ?? await invitationTerminalCommands.readPending()
-    ?? await challengeCommands.readPending();
+    ?? await challengeCommands.readPending()
+    ?? await solveCommands.readPending();
   const incomingDetails = await invitationCommandRpc.getPendingInvitationDetails?.();
   if (incomingDetails) {
     const { invitation, ...details } = incomingDetails;
@@ -546,13 +622,9 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
   }
   const committedChallenge = await challengeLifecycleRpc.getCommittedChallenge?.();
   if (committedChallenge) {
-    const projection = projectChallenge(committedChallenge, health.serverTime);
-    return {
-      ...snapshotMetadata(health, worker, pendingCommand),
-      kind: projection.kind,
-      challenge: projection.challenge,
-      actions: projection.actions,
-    };
+    // Active Snapshots must expose the complete derived progress object. The
+    // helper also keeps Scheduled/Terminal projections on the same seam.
+    return buildChallengeSnapshot(committedChallenge);
   }
   const latestCanceledChallenge = await challengeLifecycleRpc.getLatestCanceledChallenge?.();
   if (latestCanceledChallenge) return buildChallengeSnapshot(latestCanceledChallenge);
@@ -698,6 +770,15 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           );
         });
       }
+      case "credit_solve": {
+        return withAuthenticatedMember(async ({ identity }) => {
+          const result = await solveCommands.createSolve(request, identity);
+          return respondToCommand(
+            { kind: "create_solve", result },
+            async () => getAppSnapshot(false),
+          );
+        });
+      }
       case "sign_out": {
         await authSessionAdapter.signOut();
         try {
@@ -721,7 +802,9 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== `larp-code-popup-v${PROTOCOL_VERSION}`) return;
   popupPorts.add(port);
+  startRealtime();
   port.onDisconnect.addListener(() => {
     popupPorts.delete(port);
+    if (popupPorts.size === 0) stopRealtime();
   });
 });
