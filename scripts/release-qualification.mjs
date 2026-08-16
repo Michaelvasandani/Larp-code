@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { exactOrigin, isReservedOrigin } from "./release-contract.mjs";
@@ -322,6 +322,9 @@ function checkCandidate(record, options, blockers) {
         add(blockers, metadata.sourceCommit === candidate.sourceCommit, "candidate source commit disagrees with candidate-build.json");
         add(blockers, metadata.archiveSha256 === candidate.archiveSha256, "candidate archive digest disagrees with candidate-build.json");
         add(blockers, metadata.networkTraceSha256 === candidate.networkTraceSha256, "candidate network trace digest disagrees with candidate-build.json");
+        add(blockers, metadata.backendOrigin === backendOrigin, "candidate backend origin disagrees with candidate-build.json");
+        add(blockers, metadata.archive === basename(candidate.archivePath), "candidate archive filename disagrees with candidate-build.json");
+        add(blockers, metadata.networkTrace === basename(candidate.networkTracePath), "candidate network trace filename disagrees with candidate-build.json");
       }
     } else blockers.push(`candidate metadata is missing: ${candidate.candidateBuildPath}`);
   }

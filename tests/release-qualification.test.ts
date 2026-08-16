@@ -133,6 +133,23 @@ describe("Ticket 41 release qualification", () => {
     expect(result.blockers).toContain("archive manifest version does not match candidate extensionVersion");
   });
 
+  it("binds candidate origin and artifact filenames to candidate-build.json", () => {
+    const originRecord = pendingRecord();
+    originRecord.candidate.backendOrigin = "https://other-api.larp-code.example";
+    expect(auditQualificationRecord(originRecord, { root }).blockers)
+      .toContain("candidate backend origin disagrees with candidate-build.json");
+
+    const archiveRecord = pendingRecord();
+    archiveRecord.candidate.archivePath = "artifacts/ticket40-publication/candidate-build.json";
+    expect(auditQualificationRecord(archiveRecord, { root }).blockers)
+      .toContain("candidate archive filename disagrees with candidate-build.json");
+
+    const traceRecord = pendingRecord();
+    traceRecord.candidate.networkTracePath = "artifacts/ticket40-publication/candidate-build.json";
+    expect(auditQualificationRecord(traceRecord, { root }).blockers)
+      .toContain("candidate network trace filename disagrees with candidate-build.json");
+  });
+
   it("requires the recorded source commit to exist as a commit object", () => {
     const record = pendingRecord();
     record.candidate.sourceCommit = "0000000000000000000000000000000000000000";
