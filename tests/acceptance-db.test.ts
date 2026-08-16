@@ -496,6 +496,104 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     const afterDeadline = await readAt(bandsChallenge, "2030-01-04T00:00:00.000Z");
     expect(afterDeadline).toMatchObject({ status: "active", progress: { day: 4, expectedProgress: 150, pairProgress: 150 } });
   });
+
+  it("keeps ordered correction history shared, authorizes only the owner, and serializes concurrent retries", async () => {
+    admin = createClient(credentials!.url, credentials!.serviceKey);
+    const inviter = await profile("CorrectionInviter");
+    const invitee = await profile("CorrectionInvitee");
+    const problemIds = PINNED_PROBLEM_SET_VERSION.problems.map((problem) => problem.id);
+    const invitation = await admin.from("invitations").insert({
+      inviter_id: inviter.id,
+      invited_email: invitee.email,
+      challenge_time_zone: "UTC",
+      start_date: "2030-01-01",
+      deadline_date: "2030-01-03",
+      problem_set_version_id: "neetcode-150-2026-08-15",
+      status: "accepted",
+    }).select("id").single();
+    expect(invitation.error).toBeNull();
+    const challenge = await admin.from("challenges").insert({
+      invitation_id: invitation.data!.id,
+      inviter_id: inviter.id,
+      invited_member_id: invitee.id,
+      challenge_time_zone: "UTC",
+      start_date: "2030-01-01",
+      deadline_date: "2030-01-03",
+      problem_set_version_id: "neetcode-150-2026-08-15",
+      status: "active",
+    }).select("id").single();
+    expect(challenge.error).toBeNull();
+    const challengeId = challenge.data!.id as string;
+    const members = await admin.from("challenge_members").insert([
+      { challenge_id: challengeId, member_id: inviter.id, member_email: inviter.email, display_name: "CorrectionInviter" },
+      { challenge_id: challengeId, member_id: invitee.id, member_email: invitee.email, display_name: "CorrectionInvitee" },
+    ]);
+    expect(members.error).toBeNull();
+    const seeded = await admin.from("solves").insert([
+      ...problemIds.slice(0, 50).map((problemId) => ({ member_id: inviter.id, challenge_id: challengeId, problem_id: problemId })),
+      ...problemIds.slice(50, 100).map((problemId) => ({ member_id: invitee.id, challenge_id: challengeId, problem_id: problemId })),
+    ]).select("id, problem_id");
+    expect(seeded.error).toBeNull();
+    const solveId = seeded.data!.find((row) => row.problem_id === problemIds[0])!.id as string;
+
+    async function correct(member: Profile, solve: string, key: string, status: "credited" | "not_credited") {
+      return member.client.rpc("correct_solve_v1", {
+        p_idempotency_key: key,
+        p_command_version: 1,
+        p_command_kind: "correct_solve",
+        p_member_id: member.id,
+        p_member_email: member.email,
+        p_challenge_id: challengeId,
+        p_solve_id: solve,
+        p_category: "reclassified",
+        p_reason: "Correcting my self-attestation.",
+        p_resulting_credit_status: status,
+      });
+    }
+
+    const unauthorized = await correct(invitee, solveId, crypto.randomUUID(), "not_credited");
+    expect(unauthorized.error?.code).toBe("42501");
+
+    const first = await correct(inviter, solveId, crypto.randomUUID(), "credited");
+    expect(first.error).toBeNull();
+    expect(first.data).toMatchObject({ solveId, actorId: inviter.id, sequence: 1, resultingCreditStatus: "credited" });
+    const firstKey = crypto.randomUUID();
+    const firstRetry = await correct(inviter, solveId, firstKey, "not_credited");
+    expect(firstRetry.error).toBeNull();
+    const firstReplay = await correct(inviter, solveId, firstKey, "not_credited");
+    expect(firstReplay.error).toBeNull();
+    expect(firstReplay.data).toEqual(firstRetry.data);
+
+    const concurrent = await Promise.all([
+      correct(inviter, solveId, crypto.randomUUID(), "not_credited"),
+      correct(inviter, solveId, crypto.randomUUID(), "not_credited"),
+    ]);
+    expect(concurrent.every((result) => result.error === null)).toBe(true);
+    expect(new Set(concurrent.map((result) => (result.data as { sequence: number }).sequence)).size).toBe(2);
+
+    const deteriorated = await inviter.client.rpc("get_challenge_at_v1", { p_challenge_id: challengeId, p_authoritative_now: "2030-01-03T12:00:00.000Z" });
+    expect(deteriorated.error).toBeNull();
+    expect(deteriorated.data).toMatchObject({ progress: { pairProgress: 49.5, petCondition: "deteriorated", highestEvolutionStage: 2 } });
+    const restored = await correct(inviter, solveId, crypto.randomUUID(), "credited");
+    expect(restored.error).toBeNull();
+    expect(restored.data).toMatchObject({ solveId, sequence: 5, resultingCreditStatus: "credited" });
+
+    const [ownerView, partnerView] = await Promise.all([
+      inviter.client.rpc("get_challenge_at_v1", { p_challenge_id: challengeId, p_authoritative_now: "2030-01-03T12:00:00.000Z" }),
+      invitee.client.rpc("get_challenge_at_v1", { p_challenge_id: challengeId, p_authoritative_now: "2030-01-03T12:00:00.000Z" }),
+    ]);
+    expect(ownerView.error).toBeNull();
+    expect(partnerView.error).toBeNull();
+    expect(ownerView.data).toMatchObject({
+      progress: { pairProgress: 50, petCondition: "sad", highestEvolutionStage: 2 },
+      solveHistory: expect.arrayContaining([expect.objectContaining({ id: solveId, creditStatus: "credited", originalCreditStatus: "credited", canCorrect: true })]),
+    });
+    const history = (ownerView.data as { solveHistory: Array<{ id: string; corrections: Array<{ sequence: number }> }> }).solveHistory.find((entry) => entry.id === solveId)!;
+    expect(history.corrections.map((correction) => correction.sequence)).toEqual([1, 2, 3, 4, 5]);
+    const partnerHistory = (partnerView.data as { solveHistory: Array<{ id: string; corrections: Array<{ sequence: number }> }> }).solveHistory.find((entry) => entry.id === solveId)!;
+    expect(partnerHistory.corrections.map((correction) => correction.sequence)).toEqual([1, 2, 3, 4, 5]);
+    expect((partnerView.data as { solveHistory: Array<{ id: string; canCorrect: boolean }> }).solveHistory.find((entry) => entry.id === solveId)?.canCorrect).toBe(false);
+  });
 });
 
 void acceptanceDb;

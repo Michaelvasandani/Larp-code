@@ -183,6 +183,52 @@ describe("versioned popup/worker protocol", () => {
     expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "credit_solve", challengeId: "challenge-1", problemId: "problem:1", affirmed: false })).toBe(false);
   });
 
+  it("accepts complete ordered Solve and correction history in an authoritative Challenge Snapshot", () => {
+    const history = [{
+      id: "solve-1",
+      memberId: "member-1",
+      challengeId: "challenge-1",
+      problemId: "problem:1",
+      claimedAt: "2026-08-16T00:01:00.000Z",
+      creditStatus: "not_credited" as const,
+      originalCreditStatus: "credited" as const,
+      corrections: [{
+        id: "correction-1",
+        solveId: "solve-1",
+        challengeId: "challenge-1",
+        actorId: "member-1",
+        correctedAt: "2026-08-16T00:02:00.000Z",
+        category: "reclassified",
+        reason: "Completed before this Challenge.",
+        resultingCreditStatus: "not_credited" as const,
+        sequence: 1,
+      }],
+    }];
+    const snapshot = {
+      ...signedOutSnapshot,
+      kind: "active" as const,
+      challenge: {
+        id: "challenge-1", invitationId: "invitation-1", timeZone: "UTC", startDate: "2026-08-16", deadlineDate: "2026-09-14",
+        problemSetVersionId: "version-a", status: "active" as const, createdAt: "2026-08-15T00:00:00.000Z",
+        members: [
+          { memberId: "member-1", email: "ada@example.test", displayName: "Ada", authority: "equal" as const },
+          { memberId: "member-2", email: "grace@example.test", displayName: "Grace", authority: "equal" as const },
+        ],
+        solveHistory: history,
+      },
+      progress: {
+        problemSetVersionId: "version-a", day: 1, durationDays: 30, expectedProgress: 5,
+        previousExpectedProgress: 0, earlierExpectedProgress: 0, pairProgress: 0, petCondition: "hungry" as const,
+        currentEvolutionStage: 1 as const, highestEvolutionStage: 1 as const,
+        members: [
+          { memberId: "member-1", email: "ada@example.test", displayName: "Ada", authority: "equal" as const, creditedTotal: 0, paceStatus: "on_pace_today" as const, paceGap: { previousTarget: 0, currentTarget: 5, gapToPreviousTarget: 0, amountNeededToday: 5, amountAhead: 0, copy: "5 more needed for today's target." } },
+          { memberId: "member-2", email: "grace@example.test", displayName: "Grace", authority: "equal" as const, creditedTotal: 0, paceStatus: "on_pace_today" as const, paceGap: { previousTarget: 0, currentTarget: 5, gapToPreviousTarget: 0, amountNeededToday: 5, amountAhead: 0, copy: "5 more needed for today's target." } },
+        ],
+      },
+    };
+    expect(isPopupResponse({ ok: true, snapshot })).toBe(true);
+  });
+
   it("accepts authenticated Invitation details and a complete scheduled Challenge", () => {
     const details = {
       problemSetVersion: {

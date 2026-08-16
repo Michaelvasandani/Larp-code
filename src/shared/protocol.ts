@@ -20,7 +20,8 @@ export type TransactionCommandKind =
   | "revoke_invitation"
   | "decline_invitation"
   | "cancel_challenge"
-  | "create_solve";
+  | "create_solve"
+  | "correct_solve";
 
 type PendingCommandBase = {
   version: TransactionCommandVersion;
@@ -66,6 +67,10 @@ export type PendingCommand =
   | (PendingCommandBase & {
       kind: "create_solve";
       intent: { challengeId: string; problemId: string; affirmed: true };
+    })
+  | (PendingCommandBase & {
+      kind: "correct_solve";
+      intent: SolveCorrectionIntent;
     });
 
 export type CommandOutcome =
@@ -172,6 +177,41 @@ export type ActivePaceStatus = "behind" | "on_pace_today" | "todays_pace_met";
 export type ActivePetCondition = "healthy" | "hungry" | "sad" | "deteriorated";
 export type ActiveEvolutionStage = 1 | 2 | 3 | 4;
 
+export type SolveCreditStatus = "credited" | "not_credited";
+export type SolveCorrectionCategory = "retracted" | "reclassified" | "restored";
+
+export type SolveCorrectionIntent = Readonly<{
+  challengeId: string;
+  solveId: string;
+  category: SolveCorrectionCategory;
+  reason: string;
+  resultingCreditStatus: SolveCreditStatus;
+}>;
+
+export type SolveCorrection = Readonly<{
+  id: string;
+  solveId: string;
+  challengeId: string;
+  actorId: string;
+  correctedAt: string;
+  category: string;
+  reason: string;
+  resultingCreditStatus: SolveCreditStatus;
+  sequence: number;
+}>;
+
+export type SolveHistoryEntry = Readonly<{
+  id: string;
+  memberId: string;
+  challengeId: string;
+  problemId: string;
+  claimedAt: string;
+  creditStatus: SolveCreditStatus;
+  originalCreditStatus: SolveCreditStatus;
+  corrections: readonly SolveCorrection[];
+  canCorrect?: boolean;
+}>;
+
 export type ActiveMemberProgress = Readonly<{
   memberId: string;
   email: string;
@@ -276,6 +316,7 @@ export type ChallengeSnapshot = Readonly<{
   createdAt: string;
   terminalActorId?: string | null;
   terminalAt?: string | null;
+  solveHistory?: readonly SolveHistoryEntry[];
   /** Present only when the authoritative Challenge is Active. */
   progress?: ActiveChallengeProgress;
   members: readonly Readonly<{
@@ -368,6 +409,7 @@ export type PopupRequest =
       problemId: string;
       affirmed: boolean;
     }
+  | ({ version: ProtocolVersion; type: "correct_solve" } & SolveCorrectionIntent)
   | {
       version: ProtocolVersion;
       type: "sign_out";
@@ -458,15 +500,12 @@ export function isInvitationDetails(value: unknown): value is InvitationDetails 
 }
 
 export function isChallengeSnapshot(value: unknown): value is ChallengeSnapshot {
-  if (!isRecord(value) || !hasExactKeys(value, [
-    "id", "invitationId", "timeZone", "startDate", "deadlineDate", "problemSetVersionId", "status", "createdAt", "members",
-  ]) && !hasExactKeys(value, [
-    "id", "invitationId", "timeZone", "startDate", "deadlineDate", "problemSetVersionId", "status", "createdAt", "members", "terminalActorId", "terminalAt",
-  ]) && !hasExactKeys(value, [
-    "id", "invitationId", "timeZone", "startDate", "deadlineDate", "problemSetVersionId", "status", "createdAt", "members", "progress",
-  ]) && !hasExactKeys(value, [
-    "id", "invitationId", "timeZone", "startDate", "deadlineDate", "problemSetVersionId", "status", "createdAt", "members", "terminalActorId", "terminalAt", "progress",
-  ])) return false;
+  if (!isRecord(value)) return false;
+  const baseKeys = ["id", "invitationId", "timeZone", "startDate", "deadlineDate", "problemSetVersionId", "status", "createdAt", "members"];
+  const optionalKeys = ["terminalActorId", "terminalAt", "progress", "solveHistory"];
+  const actualKeys = Object.keys(value);
+  if (!baseKeys.every((key) => actualKeys.includes(key))
+    || actualKeys.some((key) => !baseKeys.includes(key) && !optionalKeys.includes(key))) return false;
   if (!isString(value.id) || !isString(value.invitationId) || !isString(value.timeZone)
     || !/^\d{4}-\d{2}-\d{2}$/.test(String(value.startDate))
     || !/^\d{4}-\d{2}-\d{2}$/.test(String(value.deadlineDate))
@@ -478,7 +517,30 @@ export function isChallengeSnapshot(value: unknown): value is ChallengeSnapshot 
     && hasExactKeys(member, ["memberId", "email", "displayName", "authority"])
     && isString(member.memberId) && isString(member.email) && isString(member.displayName)
     && member.authority === "equal")
-    && (!('progress' in value) || isActiveProgress(value.progress));
+    && (!('progress' in value) || isActiveProgress(value.progress))
+    && (!('solveHistory' in value) || isSolveHistory(value.solveHistory));
+}
+
+function isSolveHistory(value: unknown): value is readonly SolveHistoryEntry[] {
+  if (!Array.isArray(value)) return false;
+  return value.every((entry) => {
+    if (!isRecord(entry)) return false;
+    const entryKeys = ["id", "memberId", "challengeId", "problemId", "claimedAt", "creditStatus", "originalCreditStatus", "corrections"];
+    if ((!hasExactKeys(entry, entryKeys) && !hasExactKeys(entry, [...entryKeys, "canCorrect"]))
+      || ("canCorrect" in entry && typeof entry.canCorrect !== "boolean")) return false;
+    if (!isString(entry.id) || !isString(entry.memberId) || !isString(entry.challengeId)
+      || !isString(entry.problemId) || !isString(entry.claimedAt)
+      || (entry.creditStatus !== "credited" && entry.creditStatus !== "not_credited")
+      || (entry.originalCreditStatus !== "credited" && entry.originalCreditStatus !== "not_credited")
+      || !Array.isArray(entry.corrections)) return false;
+    return entry.corrections.every((correction) => isRecord(correction)
+      && hasExactKeys(correction, ["id", "solveId", "challengeId", "actorId", "correctedAt", "category", "reason", "resultingCreditStatus", "sequence"])
+      && isString(correction.id) && isString(correction.solveId) && isString(correction.challengeId)
+      && isString(correction.actorId) && isString(correction.correctedAt) && isString(correction.category)
+      && isString(correction.reason)
+      && (correction.resultingCreditStatus === "credited" || correction.resultingCreditStatus === "not_credited")
+      && typeof correction.sequence === "number" && Number.isInteger(correction.sequence) && correction.sequence >= 1);
+  });
 }
 
 export function parseInvitationDetails(value: unknown): InvitationDetailsRecord {
@@ -550,7 +612,7 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
     "requestedAt",
   ])) return false;
   if (value.version !== TRANSACTION_COMMAND_VERSION
-    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "create_solve"].includes(String(value.kind))
+    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "create_solve", "correct_solve"].includes(String(value.kind))
     || !isString(value.idempotencyKey) || !isString(value.memberId)
     || !isString(value.memberEmail) || !isString(value.requestedAt)) return false;
   if (!isRecord(value.intent)) return false;
@@ -570,13 +632,19 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
     && typeof value.intent.challengeId === "string"
     && typeof value.intent.problemId === "string"
     && value.intent.affirmed === true;
+  if (value.kind === "correct_solve") return hasExactKeys(value.intent, ["challengeId", "solveId", "category", "reason", "resultingCreditStatus"])
+    && typeof value.intent.challengeId === "string"
+    && typeof value.intent.solveId === "string"
+    && typeof value.intent.category === "string"
+    && typeof value.intent.reason === "string"
+    && (value.intent.resultingCreditStatus === "credited" || value.intent.resultingCreditStatus === "not_credited");
   return hasExactKeys(value.intent, ["invitationId"])
     && typeof value.intent.invitationId === "string";
 }
 
 export function isCommandOutcome(value: unknown): value is CommandOutcome {
   if (!isRecord(value) || typeof value.status !== "string"
-    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "create_solve"].includes(String(value.kind))) return false;
+    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "create_solve", "correct_solve"].includes(String(value.kind))) return false;
   if (value.status === "applied") {
     return hasExactKeys(value, ["status", "kind", "idempotencyKey"]) && isString(value.idempotencyKey);
   }
@@ -721,6 +789,14 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
   if (value.type === "credit_solve") {
     return hasExactKeys(value, ["version", "type", "challengeId", "problemId", "affirmed"])
       && isString(value.challengeId) && isString(value.problemId) && value.affirmed === true;
+  }
+  if (value.type === "correct_solve") {
+    return hasExactKeys(value, ["version", "type", "challengeId", "solveId", "category", "reason", "resultingCreditStatus"])
+      && isString(value.challengeId)
+      && isString(value.solveId)
+      && typeof value.category === "string"
+      && typeof value.reason === "string"
+      && (value.resultingCreditStatus === "credited" || value.resultingCreditStatus === "not_credited");
   }
   return value.type === "verify_email_otp"
     && hasExactKeys(value, ["version", "type", "email", "token"])

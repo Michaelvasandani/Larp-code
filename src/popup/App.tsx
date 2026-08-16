@@ -10,6 +10,7 @@ import {
   type PopupRequest,
   type PopupResponse,
   type SignInState,
+  type SolveCorrectionCategory,
 } from "../shared/protocol";
 import { DISPLAY_NAME_MAX_LENGTH, stripDisplayNameControlCharacters } from "../worker/member-account";
 import { PINNED_PROBLEM_SET_VERSION } from "../catalog/problem-set";
@@ -605,6 +606,11 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
   const pending = Boolean(snapshot.pendingCommand) || commandOutcome?.status === "uncertain";
   const canCreditSolve = snapshot.actions?.includes("solve") ?? false;
   const selectedProblem = PINNED_PROBLEM_SET_VERSION.problems.find((problem) => problem.id === selectedProblemId);
+  const solveHistory = snapshot.challenge.solveHistory ?? [];
+  const [correctionSolveId, setCorrectionSolveId] = useState<string | null>(null);
+  const [correctionCategory, setCorrectionCategory] = useState<SolveCorrectionCategory>("reclassified");
+  const [correctionReason, setCorrectionReason] = useState("");
+  const [correctionStatus, setCorrectionStatus] = useState<"credited" | "not_credited">("not_credited");
 
   async function creditSolve(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -630,6 +636,28 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
   if (!progress) {
     return <section className="state-card" role="alert"><h2>Active state is unavailable</h2><p>Refresh to receive a complete authoritative Snapshot.</p></section>;
   }
+
+  const memberName = (memberId: string) => progress.members.find((member) => member.memberId === memberId)?.displayName ?? "Member";
+  const correctionPending = pending && commandOutcome?.kind === "correct_solve";
+
+  async function correctSolve(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!correctionSolveId || !correctionReason.trim() || correctionPending) return;
+    const response = await onAction({
+      version: PROTOCOL_VERSION,
+      type: "correct_solve",
+      challengeId: snapshot.challenge.id,
+      solveId: correctionSolveId,
+      category: correctionCategory,
+      reason: correctionReason,
+      resultingCreditStatus: correctionStatus,
+    });
+    if (response?.ok && (!response.command || response.command.status === "applied")) {
+      setCorrectionSolveId(null);
+      setCorrectionReason("");
+    }
+  }
+
   return (
     <section className="state-card" aria-labelledby="active-title">
       <p className="eyebrow">ACTIVE CHALLENGE · PET</p>
@@ -672,6 +700,56 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
           {isSubmitting ? "Crediting solve…" : "Credit my solve"}
         </button>
       </form> : <p role="status">The Challenge deadline has passed. New Solves are no longer accepted.</p>}
+      <section className="solve-history" aria-labelledby="solve-history-title">
+        <h3 id="solve-history-title">Solve history</h3>
+        <p className="field-help">Original claims are self-attested. Later corrections are shown underneath and remain visible to both Members.</p>
+        {solveHistory.length === 0 && <p className="field-help">No Solves have been recorded yet.</p>}
+        {solveHistory.map((solve) => (
+          <article key={solve.id} className="solve-history-entry">
+            <p className="solve-history-original">
+              <strong>{memberName(solve.memberId)} · {solve.problemId}</strong><br />
+              Original self-attestation · {solve.originalCreditStatus === "credited" ? "credited" : "not credited"} · {solve.claimedAt}
+            </p>
+            {solve.corrections.map((correction) => (
+              <p key={correction.id} className="solve-history-correction">
+                Correction {correction.sequence} by {memberName(correction.actorId)} · {correction.category} · {correction.resultingCreditStatus === "credited" ? "credited" : "not credited"}<br />
+                {correction.reason} · {correction.correctedAt}
+              </p>
+            ))}
+            {solve.canCorrect && !correctionPending && (
+              <button type="button" className="text-button" onClick={() => {
+                setCorrectionSolveId(solve.id);
+                setCorrectionStatus(solve.creditStatus);
+              }}>
+                Correct my Solve
+              </button>
+            )}
+          </article>
+        ))}
+        {correctionSolveId && (
+          <form onSubmit={correctSolve} aria-label="Correct my Solve">
+            <h4>Correct my Solve</h4>
+            <p className="field-help">This records your reason and resulting credit state. It does not delete the original self-attestation.</p>
+            <label htmlFor="correction-category">Correction category</label>
+            <select id="correction-category" value={correctionCategory} onChange={(event) => setCorrectionCategory(event.target.value as SolveCorrectionCategory)} disabled={correctionPending}>
+              <option value="reclassified">Reclassified</option>
+              <option value="retracted">Retracted</option>
+              <option value="restored">Restored</option>
+            </select>
+            <label htmlFor="correction-status">Resulting credit state</label>
+            <select id="correction-status" value={correctionStatus} onChange={(event) => setCorrectionStatus(event.target.value as "credited" | "not_credited")} disabled={correctionPending}>
+              <option value="credited">Credited</option>
+              <option value="not_credited">Not credited</option>
+            </select>
+            <label htmlFor="correction-reason">Reason</label>
+            <input id="correction-reason" value={correctionReason} onChange={(event) => setCorrectionReason(event.target.value)} maxLength={500} disabled={correctionPending} required />
+            {commandOutcome?.status === "rejected" && commandOutcome.kind === "correct_solve" && <p className="auth-status error-status" role="alert">{commandOutcome.message}</p>}
+            {correctionPending && <p className="auth-status" role="status">Checking whether this correction completed. Refresh to reconcile the authoritative history.</p>}
+            <button type="submit" className="primary-button" disabled={correctionPending || !correctionReason.trim()}>Save correction</button>
+            <button type="button" className="text-button" onClick={() => setCorrectionSolveId(null)} disabled={correctionPending}>Close</button>
+          </form>
+        )}
+      </section>
       <ChallengeTerms challenge={snapshot.challenge} />
       <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
       <SnapshotDetails snapshot={snapshot} />
@@ -731,7 +809,8 @@ export function App() {
       || request.type === "revoke_invitation"
       || request.type === "decline_invitation"
       || request.type === "cancel_challenge"
-      || request.type === "credit_solve") setCommandOutcome(undefined);
+      || request.type === "credit_solve"
+      || request.type === "correct_solve") setCommandOutcome(undefined);
     try {
       const response = await sendRequest(request);
       if (!response.ok) {
@@ -767,12 +846,16 @@ export function App() {
         || request.type === "revoke_invitation"
         || request.type === "decline_invitation"
         || request.type === "cancel_challenge"
-        || request.type === "credit_solve") {
-        setCommandOutcome(createUncertainCommandOutcome("pending-recovery"));
+        || request.type === "credit_solve"
+        || request.type === "correct_solve") {
+        setCommandOutcome(createUncertainCommandOutcome(
+          "pending-recovery",
+          request.type === "correct_solve" ? "correct_solve" : request.type === "credit_solve" ? "create_solve" : undefined,
+        ));
         void requestSnapshot().then((snapshot) => {
           setState({ status: "loaded", snapshot });
           if (snapshot.pendingCommand) {
-            setCommandOutcome(createUncertainCommandOutcome(snapshot.pendingCommand.idempotencyKey));
+            setCommandOutcome(createUncertainCommandOutcome(snapshot.pendingCommand.idempotencyKey, snapshot.pendingCommand.kind));
           } else {
             setCommandOutcome(undefined);
           }

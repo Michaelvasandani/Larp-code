@@ -1,17 +1,24 @@
 import {
   TRANSACTION_COMMAND_VERSION,
+  type SolveCorrectionCategory,
+  type SolveCorrectionIntent,
   type PendingCommand,
 } from "../shared/protocol";
 import {
-  createPendingCommandStore,
+  classifyRecoverableCommandFailure,
+  createRecoverableCommandRunner,
   sameIdentity,
   type CommandIdentity,
   type PendingCommandStorage,
 } from "./command-recovery";
-import { errorCode, errorMessage, errorStatus, isUnavailable } from "./errors";
 
 export const CREATE_SOLVE_COMMAND_KIND = "create_solve" as const;
 export const CREATE_SOLVE_COMMAND_VERSION = TRANSACTION_COMMAND_VERSION;
+export const CORRECT_SOLVE_COMMAND_KIND = "correct_solve" as const;
+export const CORRECT_SOLVE_COMMAND_VERSION = TRANSACTION_COMMAND_VERSION;
+
+export type SolveCreditStatus = "credited" | "not_credited";
+export type { SolveCorrectionCategory, SolveCorrectionIntent } from "../shared/protocol";
 
 export type SolveRecord = Readonly<{
   id: string;
@@ -19,7 +26,8 @@ export type SolveRecord = Readonly<{
   challengeId: string;
   problemId: string;
   claimedAt: string;
-  creditStatus: "credited";
+  originalCreditStatus: SolveCreditStatus;
+  creditStatus: SolveCreditStatus;
 }>;
 
 export function parseSolve(value: unknown): SolveRecord {
@@ -27,13 +35,41 @@ export function parseSolve(value: unknown): SolveRecord {
     throw new Error("The backend returned an invalid Solve.");
   }
   const row = value as Record<string, unknown>;
-  const keys = ["id", "memberId", "challengeId", "problemId", "claimedAt", "creditStatus"];
+  const keys = ["id", "memberId", "challengeId", "problemId", "claimedAt", "originalCreditStatus", "creditStatus"];
   if (Object.keys(row).some((key) => !keys.includes(key))
     || !keys.every((key) => typeof row[key] === "string")
-    || row.creditStatus !== "credited") {
+    || (row.originalCreditStatus !== "credited" && row.originalCreditStatus !== "not_credited")
+    || (row.creditStatus !== "credited" && row.creditStatus !== "not_credited")) {
     throw new Error("The backend returned an invalid Solve.");
   }
   return Object.freeze(row as unknown as SolveRecord);
+}
+
+export type SolveCorrectionRecord = Readonly<{
+  id: string;
+  solveId: string;
+  challengeId: string;
+  actorId: string;
+  correctedAt: string;
+  category: SolveCorrectionCategory;
+  reason: string;
+  resultingCreditStatus: SolveCreditStatus;
+  sequence: number;
+}>;
+
+export function parseSolveCorrection(value: unknown): SolveCorrectionRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("The backend returned an invalid Solve Correction.");
+  }
+  const row = value as Record<string, unknown>;
+  const keys = ["id", "solveId", "challengeId", "actorId", "correctedAt", "category", "reason", "resultingCreditStatus", "sequence"];
+  if (Object.keys(row).some((key) => !keys.includes(key))
+    || !keys.filter((key) => key !== "sequence").every((key) => typeof row[key] === "string")
+    || (row.resultingCreditStatus !== "credited" && row.resultingCreditStatus !== "not_credited")
+    || typeof row.sequence !== "number" || !Number.isInteger(row.sequence) || row.sequence < 1) {
+    throw new Error("The backend returned an invalid Solve Correction.");
+  }
+  return Object.freeze(row as unknown as SolveCorrectionRecord);
 }
 
 export type SolveRpc = {
@@ -54,23 +90,25 @@ export type SolveCommandResult =
   | { status: "rejected"; kind: typeof CREATE_SOLVE_COMMAND_KIND; code: "unauthorized" | "validation" | "rate_limited"; message: string }
   | { status: "uncertain"; kind: typeof CREATE_SOLVE_COMMAND_KIND; idempotencyKey: string; message: "Checking whether this completed." };
 
-function classifyFailure(error: unknown): { code: "unauthorized" | "validation" | "rate_limited"; message: string } | null {
-  if (isUnavailable(error)) return null;
-  const status = errorStatus(error);
-  const code = errorCode(error);
-  const message = errorMessage(error);
-  if (status === 401 || status === 403 || code === "42501" || /authentication is required|unauthorized|verified email|not a Challenge Member/i.test(message)) {
-    return { code: "unauthorized", message };
-  }
-  if (status === 429 || code === "P0002" || /rate.?limit|too many/i.test(message)) {
-    return { code: "rate_limited", message: "Too many Challenge actions. Please wait and try again." };
-  }
-  if (status === 400 || status === 409 || status === 422 || code === "22023" || code === "P0003"
-    || /already credited|already exists|active|deadline|problem|affirm|solve|challenge/i.test(message)) {
-    return { code: "validation", message };
-  }
-  return null;
-}
+export type SolveCorrectionRpc = {
+  correctSolve: (input: {
+    idempotencyKey: string;
+    commandVersion: typeof CORRECT_SOLVE_COMMAND_VERSION;
+    commandKind: typeof CORRECT_SOLVE_COMMAND_KIND;
+    memberId: string;
+    memberEmail: string;
+    challengeId: string;
+    solveId: string;
+    category: SolveCorrectionCategory;
+    reason: string;
+    resultingCreditStatus: SolveCreditStatus;
+  }) => Promise<SolveCorrectionRecord>;
+};
+
+export type SolveCorrectionCommandResult =
+  | { status: "applied"; kind: typeof CORRECT_SOLVE_COMMAND_KIND; idempotencyKey: string; correction: SolveCorrectionRecord }
+  | { status: "rejected"; kind: typeof CORRECT_SOLVE_COMMAND_KIND; code: "unauthorized" | "validation" | "rate_limited"; message: string }
+  | { status: "uncertain"; kind: typeof CORRECT_SOLVE_COMMAND_KIND; idempotencyKey: string; message: "Checking whether this completed." };
 
 export function createSolveCommandAdapter({
   rpc,
@@ -83,14 +121,12 @@ export function createSolveCommandAdapter({
   now?: () => string;
   randomIdempotencyKey?: () => string;
 }) {
-  const pendingStore = createPendingCommandStore(storage);
-
-  async function send(pending: PendingCommand): Promise<SolveCommandResult> {
-    if (pending.kind !== CREATE_SOLVE_COMMAND_KIND || pending.intent.affirmed !== true) {
-      return { status: "uncertain", kind: CREATE_SOLVE_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
-    }
-    try {
-      const solve = await rpc.createSolve({
+  const runner = createRecoverableCommandRunner({
+    storage,
+    kind: CREATE_SOLVE_COMMAND_KIND,
+    classifyFailure: classifyRecoverableCommandFailure,
+    dispatch: async (pending) => ({
+      solve: parseSolve(await rpc.createSolve({
         idempotencyKey: pending.idempotencyKey,
         commandVersion: CREATE_SOLVE_COMMAND_VERSION,
         commandKind: CREATE_SOLVE_COMMAND_KIND,
@@ -99,18 +135,9 @@ export function createSolveCommandAdapter({
         challengeId: pending.intent.challengeId,
         problemId: pending.intent.problemId,
         affirmed: true,
-      });
-      await pendingStore.clear(pending.idempotencyKey);
-      return { status: "applied", kind: CREATE_SOLVE_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, solve: parseSolve(solve) };
-    } catch (error) {
-      const known = classifyFailure(error);
-      if (known) {
-        await pendingStore.clear(pending.idempotencyKey);
-        return { status: "rejected", kind: CREATE_SOLVE_COMMAND_KIND, ...known };
-      }
-      return { status: "uncertain", kind: CREATE_SOLVE_COMMAND_KIND, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
-    }
-  }
+      })),
+    }),
+  });
 
   async function createSolve(
     intent: { challengeId: string; problemId: string; affirmed: boolean },
@@ -121,17 +148,17 @@ export function createSolveCommandAdapter({
     if (!challengeId || !problemId || intent.affirmed !== true) {
       return { status: "rejected", kind: CREATE_SOLVE_COMMAND_KIND, code: "validation", message: "Select a Problem and affirm that you completed or recompleted it during the Active Challenge." };
     }
-    const existing = await pendingStore.read();
+    const existing = await runner.readPending();
     if (existing) {
       if (!sameIdentity(existing, identity)) {
-        await pendingStore.clear(existing.idempotencyKey);
+        await runner.pendingStore.clear(existing.idempotencyKey);
       } else if (existing.kind !== CREATE_SOLVE_COMMAND_KIND
         || existing.intent.challengeId !== challengeId
         || existing.intent.problemId !== problemId
         || existing.intent.affirmed !== true) {
         return { status: "uncertain", kind: CREATE_SOLVE_COMMAND_KIND, idempotencyKey: existing.idempotencyKey, message: "Checking whether this completed." };
       } else {
-        return send(existing);
+        return runner.send(existing) as Promise<SolveCommandResult>;
       }
     }
     const pending: PendingCommand = {
@@ -143,19 +170,98 @@ export function createSolveCommandAdapter({
       intent: { challengeId, problemId, affirmed: true },
       requestedAt: now(),
     };
-    await pendingStore.persist(pending);
-    return send(pending);
+    await runner.pendingStore.persist(pending);
+    return runner.send(pending) as Promise<SolveCommandResult>;
   }
 
   async function recover(identity: CommandIdentity): Promise<SolveCommandResult | null> {
-    const pending = await pendingStore.read();
-    if (!pending || pending.kind !== CREATE_SOLVE_COMMAND_KIND) return null;
-    if (!sameIdentity(pending, identity)) {
-      await pendingStore.clear(pending.idempotencyKey);
-      return null;
-    }
-    return send(pending);
+    return runner.recover(identity) as Promise<SolveCommandResult | null>;
   }
 
-  return { createSolve, recover, readPending: pendingStore.read };
+  return { createSolve, recover, readPending: runner.readPending };
+}
+
+export function createSolveCorrectionCommandAdapter({
+  rpc,
+  storage,
+  now = () => new Date().toISOString(),
+  randomIdempotencyKey = () => crypto.randomUUID(),
+}: {
+  rpc: SolveCorrectionRpc;
+  storage: PendingCommandStorage;
+  now?: () => string;
+  randomIdempotencyKey?: () => string;
+}) {
+  const runner = createRecoverableCommandRunner({
+    storage,
+    kind: CORRECT_SOLVE_COMMAND_KIND,
+    classifyFailure: classifyRecoverableCommandFailure,
+    dispatch: async (pending) => ({
+      correction: parseSolveCorrection(await rpc.correctSolve({
+        idempotencyKey: pending.idempotencyKey,
+        commandVersion: CORRECT_SOLVE_COMMAND_VERSION,
+        commandKind: CORRECT_SOLVE_COMMAND_KIND,
+        memberId: pending.memberId,
+        memberEmail: pending.memberEmail,
+        challengeId: pending.intent.challengeId,
+        solveId: pending.intent.solveId,
+        category: pending.intent.category,
+        reason: pending.intent.reason,
+        resultingCreditStatus: pending.intent.resultingCreditStatus,
+      })),
+    }),
+  });
+
+  async function correctSolve(
+    input: SolveCorrectionIntent,
+    identity: CommandIdentity,
+  ): Promise<SolveCorrectionCommandResult> {
+    const challengeId = input.challengeId.trim();
+    const solveId = input.solveId.trim();
+    const category = input.category.trim().toLowerCase() as SolveCorrectionCategory;
+    const reason = input.reason.trim();
+    if (!challengeId || !solveId || !category || !reason
+      || !["retracted", "reclassified", "restored"].includes(category)
+      || reason.length > 500 || category.length > 80
+      || (input.resultingCreditStatus !== "credited" && input.resultingCreditStatus !== "not_credited")) {
+      return {
+        status: "rejected",
+        kind: CORRECT_SOLVE_COMMAND_KIND,
+        code: "validation",
+        message: "A Solve, correction category, reason, and resulting credit state are required.",
+      };
+    }
+    const existing = await runner.readPending();
+    if (existing) {
+      if (!sameIdentity(existing, identity)) {
+        await runner.pendingStore.clear(existing.idempotencyKey);
+      } else if (existing.kind !== CORRECT_SOLVE_COMMAND_KIND
+        || existing.intent.challengeId !== challengeId
+        || existing.intent.solveId !== solveId
+        || existing.intent.category !== category
+        || existing.intent.reason !== reason
+        || existing.intent.resultingCreditStatus !== input.resultingCreditStatus) {
+        return { status: "uncertain", kind: CORRECT_SOLVE_COMMAND_KIND, idempotencyKey: existing.idempotencyKey, message: "Checking whether this completed." };
+      } else {
+        return runner.send(existing) as Promise<SolveCorrectionCommandResult>;
+      }
+    }
+    const pending: PendingCommand = {
+      version: CORRECT_SOLVE_COMMAND_VERSION,
+      kind: CORRECT_SOLVE_COMMAND_KIND,
+      idempotencyKey: randomIdempotencyKey(),
+      memberId: identity.memberId,
+      memberEmail: identity.memberEmail.trim().toLowerCase(),
+      intent: { challengeId, solveId, category, reason, resultingCreditStatus: input.resultingCreditStatus },
+      requestedAt: now(),
+    };
+    await runner.pendingStore.persist(pending);
+    return runner.send(pending) as Promise<SolveCorrectionCommandResult>;
+  }
+
+  async function recover(identity: CommandIdentity): Promise<SolveCorrectionCommandResult | null> {
+    return runner.recover(identity) as Promise<SolveCorrectionCommandResult | null>;
+  }
+
+  return { correctSolve, recover, readPending: runner.readPending };
 }

@@ -51,8 +51,11 @@ import {
 } from "./challenge";
 import {
   createSolveCommandAdapter,
+  createSolveCorrectionCommandAdapter,
   parseSolve,
+  parseSolveCorrection,
   type SolveRpc,
+  type SolveCorrectionRpc,
 } from "./solve";
 import { createDebouncedSnapshotInvalidation } from "./realtime";
 
@@ -264,6 +267,24 @@ const solveRpc: SolveRpc = {
     return parseSolve(data);
   },
 };
+const solveCorrectionRpc: SolveCorrectionRpc = {
+  async correctSolve(input) {
+    const { data, error } = await client.rpc("correct_solve_v1", {
+      p_idempotency_key: input.idempotencyKey,
+      p_command_version: input.commandVersion,
+      p_command_kind: input.commandKind,
+      p_member_id: input.memberId,
+      p_member_email: input.memberEmail,
+      p_challenge_id: input.challengeId,
+      p_solve_id: input.solveId,
+      p_category: input.category,
+      p_reason: input.reason,
+      p_resulting_credit_status: input.resultingCreditStatus,
+    });
+    if (error) throw error;
+    return parseSolveCorrection(data);
+  },
+};
 const displayNameCommands = createDisplayNameCommandAdapter({
   rpc: displayNameCommandRpc,
   storage: memberStorage,
@@ -301,6 +322,10 @@ const solveCommands = createSolveCommandAdapter({
   rpc: solveRpc,
   storage: memberStorage,
 });
+const solveCorrectionCommands = createSolveCorrectionCommandAdapter({
+  rpc: solveCorrectionRpc,
+  storage: memberStorage,
+});
 const bootId = crypto.randomUUID();
 const initialSessionStatePromise = authSessionAdapter.restoreSession();
 let pendingSnapshotSession: typeof initialSessionStatePromise | undefined = initialSessionStatePromise;
@@ -326,6 +351,7 @@ function startRealtime(): void {
   broadcastWorkerEvent({ version: PROTOCOL_VERSION, type: "realtime_status", status: "connecting" });
   realtimeChannel = client.channel("larp-code-active-challenge")
     .on("postgres_changes", { event: "*", schema: "public", table: "solves" }, realtimeInvalidation.invalidate)
+    .on("postgres_changes", { event: "*", schema: "public", table: "solve_corrections" }, realtimeInvalidation.invalidate)
     .on("postgres_changes", { event: "*", schema: "public", table: "challenges" }, realtimeInvalidation.invalidate)
     .subscribe((status) => {
       if (status === "SUBSCRIBED") realtimeInvalidation.invalidate();
@@ -444,12 +470,14 @@ type CommandResult =
   | { kind: "accept_invitation"; result: Awaited<ReturnType<typeof acceptanceCommands.acceptInvitation>> }
   | { kind: "revoke_invitation" | "decline_invitation"; result: Awaited<ReturnType<typeof invitationTerminalCommands.revokeInvitation>> }
   | { kind: "cancel_challenge"; result: Awaited<ReturnType<typeof challengeCommands.cancelChallenge>> }
-  | { kind: "create_solve"; result: Awaited<ReturnType<typeof solveCommands.createSolve>> };
+  | { kind: "create_solve"; result: Awaited<ReturnType<typeof solveCommands.createSolve>> }
+  | { kind: "correct_solve"; result: Awaited<ReturnType<typeof solveCorrectionCommands.correctSolve>> };
 type AppliedInvitationCommand = Extract<CommandResult, { kind: "create_invitation" | "revoke_invitation" | "decline_invitation" }>;
 type AppliedInvitationResult = Extract<AppliedInvitationCommand["result"], { status: "applied" }>;
 type AppliedAcceptanceResult = Extract<Extract<CommandResult, { kind: "accept_invitation" }>['result'], { status: "applied" }>;
 type AppliedChallengeResult = Extract<Extract<CommandResult, { kind: "cancel_challenge" }>['result'], { status: "applied" }>;
 type AppliedSolveResult = Extract<Extract<CommandResult, { kind: "create_solve" }>['result'], { status: "applied" }>;
+type AppliedCorrectionResult = Extract<Extract<CommandResult, { kind: "correct_solve" }>['result'], { status: "applied" }>;
 function invitationSnapshot(
   health: FoundationHealth,
   worker: WorkerEvidence,
@@ -474,7 +502,7 @@ async function rememberInvitation(invitationId: string): Promise<void> {
 
 async function respondToCommand(
   command: CommandResult,
-  buildAppliedSnapshot?: (result: AppliedInvitationResult | AppliedAcceptanceResult | AppliedChallengeResult | AppliedSolveResult) => Promise<AppSnapshot>,
+  buildAppliedSnapshot?: (result: AppliedInvitationResult | AppliedAcceptanceResult | AppliedChallengeResult | AppliedSolveResult | AppliedCorrectionResult) => Promise<AppSnapshot>,
 ): Promise<PopupResponse> {
   let snapshot: AppSnapshot;
   try {
@@ -519,6 +547,9 @@ async function respondToCommand(
   if (command.kind === "create_solve" && buildAppliedSnapshot) {
     snapshot = await buildAppliedSnapshot(command.result as AppliedSolveResult);
   }
+  if (command.kind === "correct_solve" && buildAppliedSnapshot) {
+    snapshot = await buildAppliedSnapshot(command.result as AppliedCorrectionResult);
+  }
   return {
     ok: true,
     snapshot,
@@ -552,6 +583,7 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     await invitationTerminalCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
     await challengeCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
     await solveCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
+    await solveCorrectionCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
   }
   const account = await memberAccount.getMemberAccount();
   if (!account) {
@@ -565,7 +597,8 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     ?? await acceptanceCommands.readPending()
     ?? await invitationTerminalCommands.readPending()
     ?? await challengeCommands.readPending()
-    ?? await solveCommands.readPending();
+    ?? await solveCommands.readPending()
+    ?? await solveCorrectionCommands.readPending();
   const incomingDetails = await invitationCommandRpc.getPendingInvitationDetails?.();
   if (incomingDetails) {
     const { invitation, ...details } = incomingDetails;
@@ -776,6 +809,15 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           const result = await solveCommands.createSolve(request, identity);
           return respondToCommand(
             { kind: "create_solve", result },
+            async () => getAppSnapshot(false),
+          );
+        });
+      }
+      case "correct_solve": {
+        return withAuthenticatedMember(async ({ identity }) => {
+          const result = await solveCorrectionCommands.correctSolve(request, identity);
+          return respondToCommand(
+            { kind: "correct_solve", result },
             async () => getAppSnapshot(false),
           );
         });

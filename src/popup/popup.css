@@ -236,6 +236,12 @@ input:focus {
 .member-progress h4, .member-progress p { margin: 0 0 4px; }
 .member-total { font-size: 18px; font-weight: 800; }
 select { width: 100%; padding: 10px; border: 1px solid #c9c2b4; border-radius: 8px; background: #fffdf9; }
+.solve-history { margin-top: 24px; }
+.solve-history-entry { margin: 10px 0; padding: 12px; border: 1px solid #e7e2d7; border-radius: 10px; }
+.solve-history-original, .solve-history-correction { margin: 0 0 8px; font-size: 12px; }
+.solve-history-correction { padding-left: 12px; border-left: 2px solid #bd6d36; }
+.solve-history form { margin-top: 14px; padding-top: 14px; border-top: 1px solid #e7e2d7; }
+.solve-history form h4 { margin: 0 0 8px; }
 
 .text-button {
   padding: 10px;
