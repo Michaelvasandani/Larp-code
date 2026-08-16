@@ -11,6 +11,9 @@ import {
   type PendingCommand,
   type PopupRequest,
   type PopupResponse,
+  type PopupDraftKind,
+  type PopupDrafts,
+  type PopupDraftValues,
   type ProtocolError,
   type WorkerEvidence,
   type WorkerEvent,
@@ -66,6 +69,7 @@ const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
 const LAST_INVITATION_ID_KEY = "invitation.lastId";
 const LAST_CHALLENGE_ID_KEY = "challenge.lastId";
+const POPUP_DRAFTS_KEY = "popup.drafts";
 const FOUNDATION_HEALTH_TIMEOUT_MS = 3_000;
 
 type FoundationHealth = {
@@ -340,6 +344,75 @@ let pendingSnapshotSession: typeof initialSessionStatePromise | undefined = init
 const workerEvidencePromise = initializeWorkerEvidence();
 const popupPorts = new Set<chrome.runtime.Port>();
 let realtimeChannel: ReturnType<typeof client.channel> | null = null;
+
+type StoredPopupDrafts = {
+  signed_out?: PopupDrafts["signed_out"];
+  members?: Record<string, PopupDrafts>;
+};
+
+async function currentPopupDraftMemberId(): Promise<string | undefined> {
+  const sessionState = await authSessionAdapter.restoreSession();
+  return sessionState.status === "authenticated" ? sessionState.session.user.id : undefined;
+}
+
+let popupDraftOperation: Promise<unknown> = Promise.resolve();
+function enqueuePopupDraftOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = popupDraftOperation.then(operation, operation);
+  popupDraftOperation = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+async function readPopupDraftEnvelope(): Promise<StoredPopupDrafts> {
+  const stored = await extensionStorage.get(POPUP_DRAFTS_KEY);
+  if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return {};
+  return stored as StoredPopupDrafts;
+}
+
+async function popupDraftsForMember(memberId?: string): Promise<PopupDrafts> {
+  const envelope = await readPopupDraftEnvelope();
+  if (!memberId) return envelope.signed_out ? { signed_out: envelope.signed_out } : {};
+  return envelope.members?.[memberId] ?? {};
+}
+
+async function savePopupDraft(draft: Extract<PopupRequest, { type: "save_draft" }>['draft'], memberId?: string): Promise<PopupDrafts> {
+  return enqueuePopupDraftOperation(async () => {
+    const envelope = await readPopupDraftEnvelope();
+    if (draft.kind === "signed_out") {
+      envelope.signed_out = draft.values;
+    } else {
+      if (!memberId) throw new Error("An authenticated Member is required for this draft.");
+      envelope.members ??= {};
+      envelope.members[memberId] ??= {};
+      (envelope.members[memberId] as Record<PopupDraftKind, PopupDraftValues[PopupDraftKind]>)[draft.kind] = draft.values;
+    }
+    await extensionStorage.set(POPUP_DRAFTS_KEY, envelope);
+    return memberId ? envelope.members?.[memberId] ?? {} : envelope.signed_out ? { signed_out: envelope.signed_out } : {};
+  });
+}
+
+async function clearPopupDraft(kind: PopupDraftKind, memberId?: string): Promise<PopupDrafts> {
+  return enqueuePopupDraftOperation(async () => {
+    const envelope = await readPopupDraftEnvelope();
+    if (!memberId) {
+      delete envelope.signed_out;
+    } else if (envelope.members?.[memberId]) {
+      delete envelope.members[memberId][kind];
+      if (Object.keys(envelope.members[memberId]).length === 0) delete envelope.members[memberId];
+    }
+    await extensionStorage.set(POPUP_DRAFTS_KEY, envelope);
+    return memberId ? envelope.members?.[memberId] ?? {} : {};
+  });
+}
+
+async function clearMemberPopupDrafts(memberId: string): Promise<void> {
+  await enqueuePopupDraftOperation(async () => {
+    const envelope = await readPopupDraftEnvelope();
+    if (envelope.members?.[memberId]) {
+      delete envelope.members[memberId];
+      await extensionStorage.set(POPUP_DRAFTS_KEY, envelope);
+    }
+  });
+}
 
 function broadcastWorkerEvent(event: Extract<WorkerEvent, { version: typeof PROTOCOL_VERSION }>): void {
   for (const port of popupPorts) {
@@ -773,6 +846,24 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           ? { ok: true, snapshot, command: recoveredCommand }
           : { ok: true, snapshot };
       }
+      case "get_drafts": {
+        const memberId = await currentPopupDraftMemberId();
+        return { ok: true, drafts: await enqueuePopupDraftOperation(() => popupDraftsForMember(memberId)) };
+      }
+      case "save_draft": {
+        if (request.draft.kind === "signed_out") {
+          return { ok: true, drafts: await savePopupDraft(request.draft), draft: { kind: request.draft.kind, status: "saved" as const } };
+        }
+        return withAuthenticatedMember(async ({ identity }) => ({
+          ok: true,
+          drafts: await savePopupDraft(request.draft, identity.memberId),
+          draft: { kind: request.draft.kind, status: "saved" as const },
+        }));
+      }
+      case "clear_draft": {
+        const memberId = await currentPopupDraftMemberId();
+        return { ok: true, drafts: await clearPopupDraft(request.kind, memberId) };
+      }
       case "request_email_otp":
       case "resend_email_otp":
         return responseWithAuth(await authSessionAdapter.requestEmailOtp(request.email));
@@ -903,6 +994,8 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
         });
       }
       case "sign_out": {
+        const sessionState = await authSessionAdapter.restoreSession();
+        if (sessionState.status === "authenticated") await clearMemberPopupDrafts(sessionState.session.user.id);
         await authSessionAdapter.signOut();
         try {
           return { ok: true, snapshot: await getAppSnapshot(true, true), auth: { status: "ready" } };
@@ -915,8 +1008,22 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
         // broader permission. Keep this action explicit and idempotent; the
         // update-required page remains the only response that exposes it.
         return { ok: true, snapshot: await getAppSnapshot(false) };
+      case "begin_account_deletion":
+        // Ticket 32 owns the authoritative fresh-OTP deletion transaction.
+        // Keep this entry point explicit and honest until that route is installed;
+        // this client never pretends that local erasure deleted a server account.
+        return {
+          ok: false,
+          error: {
+            code: "internal",
+            message: "Account deletion requires a fresh confirmation and is not available in this client yet.",
+          },
+        };
       case "erase_local_data":
-        await authSessionAdapter.signOut();
+        {
+          await authSessionAdapter.signOut();
+          await extensionStorage.clear();
+        }
         return responseWithAuth({ status: "ready" });
     }
   } catch (error) {

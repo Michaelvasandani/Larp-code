@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   isPopupResponse,
@@ -12,11 +12,14 @@ import {
   type PendingCommand,
   type SignInState,
   type SolveCorrectionCategory,
-  type TransactionCommandKind,
 } from "../shared/protocol";
 import { DISPLAY_NAME_MAX_LENGTH, stripDisplayNameControlCharacters } from "../worker/member-account";
 import { PINNED_PROBLEM_SET_VERSION } from "../catalog/problem-set";
 import { preserveSignedOutAuthState } from "./auth-state";
+import { ConfirmationDialog } from "./ConfirmationDialog";
+import { clearPopupDraft, PopupDraftStatus, usePopupDraft } from "./drafts";
+import { GrovekinPresentation } from "./GrovekinPresentation";
+import { commandKindForRequest, draftKindsForRequest, isDomainMutation } from "./request-metadata";
 
 type LoadState =
   | { status: "loading" }
@@ -82,26 +85,6 @@ function cooldownSeconds(state: SignInState, now: number): number {
   return remaining > 0 ? Math.ceil(remaining / 1_000) : 0;
 }
 
-const DOMAIN_MUTATION_COMMAND_KINDS: Partial<Record<PopupRequest["type"], TransactionCommandKind>> = {
-  update_display_name: "update_display_name",
-  create_invitation: "create_invitation",
-  accept_invitation: "accept_invitation",
-  revoke_invitation: "revoke_invitation",
-  decline_invitation: "decline_invitation",
-  cancel_challenge: "cancel_challenge",
-  abandon_challenge: "abandon_challenge",
-  credit_solve: "create_solve",
-  correct_solve: "correct_solve",
-};
-
-function commandKindForRequest(request: PopupRequest): TransactionCommandKind | undefined {
-  return DOMAIN_MUTATION_COMMAND_KINDS[request.type];
-}
-
-function isDomainMutation(request: PopupRequest): boolean {
-  return request.type === "create_member_account" || commandKindForRequest(request) !== undefined;
-}
-
 function pendingCommandOf(snapshot: AppSnapshot): PendingCommand | null | undefined {
   // For domain snapshots this is equivalent to
   // createUncertainCommandOutcome(snapshot.pendingCommand.idempotencyKey, snapshot.pendingCommand.kind).
@@ -119,11 +102,14 @@ function SignedOut({
   authState: SignInState;
   onAction: (request: PopupRequest) => Promise<PopupResponse | undefined>;
 }) {
-  const [isSignInFormVisible, setSignInFormVisible] = useState(false);
+  const [signedOutDraft, setSignedOutDraft, signedOutDraftStatus, retrySignedOutDraft] = usePopupDraft("signed_out", {
+    email: "",
+    isSignInFormVisible: false,
+  });
   const [codeEntryActive, setCodeEntryActive] = useState(false);
-  const [email, setEmail] = useState("");
   const [token, setToken] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  const { email, isSignInFormVisible } = signedOutDraft;
   const hasCode = codeEntryActive && (isCodeEntryState(authState.status) || authState.status === "requesting_code");
   const remaining = cooldownSeconds(authState, now);
   const isBusy = authState.status === "verifying" || authState.status === "requesting_code";
@@ -156,13 +142,14 @@ function SignedOut({
     <section className="state-card" aria-labelledby="signed-out-title">
       <p className="eyebrow">MEMBER ACCOUNT</p>
       <h2 id="signed-out-title">You’re signed out</h2>
+      <PopupDraftStatus status={signedOutDraftStatus} onRetry={retrySignedOutDraft} />
       {!isSignInFormVisible && (
         <>
           <p>
             Sign in with your email to enter a shared NeetCode 150 Challenge.
             Your email remains your sole account and recovery authority.
           </p>
-          <button type="button" className="primary-button" onClick={() => setSignInFormVisible(true)}>
+          <button type="button" className="primary-button" onClick={() => setSignedOutDraft((current) => ({ ...current, isSignInFormVisible: true }))}>
             Sign in with email
           </button>
         </>
@@ -182,7 +169,7 @@ function SignedOut({
                 type="email"
                 autoComplete="email"
                 value={email}
-                onChange={(event) => setEmail(event.target.value)}
+                onChange={(event) => setSignedOutDraft((current) => ({ ...current, email: event.target.value }))}
                 required
               />
               <button type="submit" className="primary-button" disabled={isBusy}>
@@ -241,7 +228,7 @@ function AuthenticatedPlaceholder({
       <p className="eyebrow">MEMBER ACCOUNT</p>
       <h2 id="placeholder-title">Signed in</h2>
       <p>Your authenticated session is restored by the service worker.</p>
-      <button type="button" className="primary-button" onClick={() => void onSignOut()}>
+      <button type="button" className="text-button" onClick={() => void onSignOut()}>
         Sign out
       </button>
       <SnapshotDetails snapshot={snapshot} />
@@ -256,8 +243,32 @@ function UpdateRequired({
   snapshot: Extract<AppSnapshot, { kind: "update_required" }>;
   onAction: (request: PopupRequest) => Promise<PopupResponse | undefined>;
 }) {
+  const [confirmingErase, setConfirmingErase] = useState(false);
+  const [updateFeedback, setUpdateFeedback] = useState<string>();
   async function requestUpdate() {
-    await onAction({ version: PROTOCOL_VERSION, type: "request_update" });
+    if (snapshot.compatibility.updateUrl) {
+      window.open(snapshot.compatibility.updateUrl, "_blank", "noopener,noreferrer");
+      setUpdateFeedback("The update page was opened in a new tab. Follow the browser's update instructions, then reopen larp-code.");
+      return;
+    }
+    const runtime = chrome.runtime as typeof chrome.runtime & {
+      requestUpdateCheck?: () => Promise<{ status: "update_available" | "no_update" | "throttled" }>;
+    };
+    if (!runtime.requestUpdateCheck) {
+      setUpdateFeedback("Automatic update checking is unavailable. Open your browser's extension updates and try again.");
+      return;
+    }
+    setUpdateFeedback("Checking for an available update…");
+    try {
+      const result = await runtime.requestUpdateCheck();
+      setUpdateFeedback(result.status === "update_available"
+        ? "An update is available. Chrome will install it; reopen larp-code when it finishes."
+        : result.status === "throttled"
+          ? "Chrome is limiting update checks. Open extension updates and try again later."
+          : "No update is available yet. Open extension updates and try again later.");
+    } catch {
+      setUpdateFeedback("Chrome could not check for an update. Open extension updates and try again.");
+    }
   }
 
   async function eraseLocalData() {
@@ -274,8 +285,18 @@ function UpdateRequired({
       <h2 id="update-required-title">Update larp-code to continue</h2>
       <p>This version is no longer safe to use with the current service. Member data remains unavailable until the extension is updated.</p>
       <button type="button" className="primary-button" onClick={() => void requestUpdate()}>Request update</button>
+      {updateFeedback && <p className="auth-status" role="status" aria-live="polite">{updateFeedback}</p>}
       <button type="button" className="text-button" onClick={() => void signOut()}>Sign out</button>
-      <button type="button" className="text-button" onClick={() => void eraseLocalData()}>Erase local data</button>
+      <button type="button" className="text-button" onClick={() => setConfirmingErase(true)}>Erase local data</button>
+      <ConfirmationDialog
+        open={confirmingErase}
+        title="Confirm local erasure"
+        description="Erasing local data signs you out and removes this extension's stored session, draft, and recovery data. It does not delete the server-side Member Account or Challenge record."
+        confirmLabel="Confirm local erasure"
+        cancelLabel="Keep local data"
+        onCancel={() => setConfirmingErase(false)}
+        onConfirm={() => { setConfirmingErase(false); void eraseLocalData(); }}
+      />
       <SnapshotDetails snapshot={snapshot} />
     </section>
   );
@@ -290,9 +311,12 @@ function SetupRequired({
   onCreate: (request: PopupRequest) => Promise<PopupResponse | undefined>;
   error?: string;
 }) {
-  const [displayName, setDisplayName] = useState("");
-  const [adultConfirmed, setAdultConfirmed] = useState(false);
-  const [consentAccepted, setConsentAccepted] = useState(false);
+  const [setupDraft, setSetupDraft, setupDraftStatus, retrySetupDraft] = usePopupDraft("setup", {
+    displayName: "",
+    adultConfirmed: false,
+    consentAccepted: false,
+  });
+  const { displayName, adultConfirmed, consentAccepted } = setupDraft;
   const [isSubmitting, setSubmitting] = useState(false);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -316,6 +340,7 @@ function SetupRequired({
     <section className="state-card" aria-labelledby="setup-title">
       <p className="eyebrow">MEMBER ACCOUNT</p>
       <h2 id="setup-title">Finish setting up your account</h2>
+      <PopupDraftStatus status={setupDraftStatus} onRetry={retrySetupDraft} />
       <p>
         Your verified email is the only account and recovery authority. Before
         you continue, please review what larp-code keeps and why.
@@ -330,6 +355,7 @@ function SetupRequired({
         Read the <a href="privacy.html" target="_blank" rel="noreferrer">public privacy policy</a> before accepting.
       </p>
       <form onSubmit={submit} aria-describedby="display-name-help">
+        <p className="field-help">Your unfinished setup is a local draft. It is not a Member Account until the worker returns an authoritative result.</p>
         <label htmlFor="member-display-name">Display name</label>
         <input
           id="member-display-name"
@@ -337,7 +363,7 @@ function SetupRequired({
           autoComplete="nickname"
           maxLength={DISPLAY_NAME_MAX_LENGTH}
           value={displayName}
-          onChange={(event) => setDisplayName(stripDisplayNameControlCharacters(event.target.value))}
+          onChange={(event) => setSetupDraft((current) => ({ ...current, displayName: stripDisplayNameControlCharacters(event.target.value) }))}
           required
           aria-describedby="display-name-help"
         />
@@ -350,7 +376,7 @@ function SetupRequired({
             <input
               type="checkbox"
               checked={adultConfirmed}
-              onChange={(event) => setAdultConfirmed(event.target.checked)}
+              onChange={(event) => setSetupDraft((current) => ({ ...current, adultConfirmed: event.target.checked }))}
               required
             />
             <span>I confirm that I am at least 18 years old.</span>
@@ -359,7 +385,7 @@ function SetupRequired({
             <input
               type="checkbox"
               checked={consentAccepted}
-              onChange={(event) => setConsentAccepted(event.target.checked)}
+              onChange={(event) => setSetupDraft((current) => ({ ...current, consentAccepted: event.target.checked }))}
               required
             />
             <span>I understand and affirmatively consent to the collection and uses described above and in the privacy policy.</span>
@@ -388,15 +414,25 @@ function MemberAccountView({
   onRetry: () => void;
   commandOutcome?: CommandOutcome;
 }) {
-  const [displayName, setDisplayName] = useState(snapshot.account.displayName);
-  const [invitedEmail, setInvitedEmail] = useState("");
-  const [timeZone, setTimeZone] = useState("UTC");
-  const [startDate, setStartDate] = useState("");
-  const [deadlineDate, setDeadlineDate] = useState("");
+  const [accountDraft, setAccountDraft, accountDraftStatus, retryAccountDraft] = usePopupDraft("account", {
+    displayName: snapshot.account.displayName,
+    invitedEmail: "",
+    timeZone: "UTC",
+    startDate: "",
+    deadlineDate: "",
+  });
+  const { displayName, invitedEmail, timeZone, startDate, deadlineDate } = accountDraft;
   const [isSubmitting, setSubmitting] = useState(false);
   const [isInviting, setInviting] = useState(false);
+  const [confirmingDeletion, setConfirmingDeletion] = useState(false);
+  const [deletionError, setDeletionError] = useState<string>();
+  const lastAuthoritativeDisplayName = useRef(snapshot.account.displayName);
 
-  useEffect(() => setDisplayName(snapshot.account.displayName), [snapshot.account.displayName]);
+  useEffect(() => {
+    if (snapshot.account.displayName === lastAuthoritativeDisplayName.current) return;
+    lastAuthoritativeDisplayName.current = snapshot.account.displayName;
+    setAccountDraft((current) => ({ ...current, displayName: snapshot.account.displayName }));
+  }, [snapshot.account.displayName, setAccountDraft]);
 
   const pending = Boolean(snapshot.pendingCommand) || commandOutcome?.status === "uncertain";
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -430,10 +466,18 @@ function MemberAccountView({
 
   const invitationCommand = commandOutcome?.kind === "create_invitation" ? commandOutcome : undefined;
 
+  async function beginAccountDeletion() {
+    setConfirmingDeletion(false);
+    setDeletionError(undefined);
+    const response = await onUpdate({ version: PROTOCOL_VERSION, type: "begin_account_deletion" });
+    if (response && !response.ok) setDeletionError(response.error.message);
+  }
+
   return (
     <section className="state-card" aria-labelledby="account-title">
       <p className="eyebrow">MEMBER ACCOUNT</p>
       <h2 id="account-title">Welcome, {snapshot.account.displayName}</h2>
+      <PopupDraftStatus status={accountDraftStatus} onRetry={retryAccountDraft} />
       <dl className="account-details">
         <div>
           <dt>Display name</dt>
@@ -452,11 +496,11 @@ function MemberAccountView({
           autoComplete="nickname"
           maxLength={DISPLAY_NAME_MAX_LENGTH}
           value={displayName}
-          onChange={(event) => setDisplayName(stripDisplayNameControlCharacters(event.target.value))}
+          onChange={(event) => setAccountDraft((current) => ({ ...current, displayName: stripDisplayNameControlCharacters(event.target.value) }))}
           required
           disabled={pending || isSubmitting}
         />
-        <button type="submit" className="primary-button" disabled={pending || isSubmitting || !displayName.trim()}>
+        <button type="submit" className="text-button" disabled={pending || isSubmitting || !displayName.trim()}>
           {isSubmitting ? "Saving display name…" : "Save display name"}
         </button>
         {commandOutcome?.status === "rejected" && (
@@ -468,6 +512,7 @@ function MemberAccountView({
             <button type="button" className="text-button" onClick={onRetry}>Check again</button>
           </p>
         )}
+        {!pending && commandOutcome?.status !== "rejected" && <span id="display-name-edit-status" className="visually-hidden">No display name update is pending.</span>}
       </form>
       <p>Your email remains your sole sign-in and recovery authority.</p>
       <hr />
@@ -476,13 +521,14 @@ function MemberAccountView({
         One pending outgoing Invitation is allowed. It does not reserve Challenge capacity, and changing a term requires a replacement Invitation.
       </p>
       <form onSubmit={submitInvitation} aria-describedby="invitation-status invitation-help">
+        <p className="field-help">Invitation fields remain a local draft until the worker returns an authoritative Invitation result.</p>
         <label htmlFor="invited-email">Invited email</label>
         <input
           id="invited-email"
           type="email"
           autoComplete="email"
           value={invitedEmail}
-          onChange={(event) => setInvitedEmail(event.target.value)}
+          onChange={(event) => setAccountDraft((current) => ({ ...current, invitedEmail: event.target.value }))}
           required
           disabled={pending || isInviting}
         />
@@ -492,7 +538,7 @@ function MemberAccountView({
           type="text"
           list="iana-time-zones"
           value={timeZone}
-          onChange={(event) => setTimeZone(event.target.value)}
+          onChange={(event) => setAccountDraft((current) => ({ ...current, timeZone: event.target.value }))}
           required
           disabled={pending || isInviting}
           aria-describedby="invitation-help"
@@ -506,9 +552,9 @@ function MemberAccountView({
         </datalist>
         <p id="invitation-help" className="field-help">Start Date must be the next calendar day or later in this shared zone. Dates are inclusive.</p>
         <label htmlFor="challenge-start-date">Start Date</label>
-        <input id="challenge-start-date" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required disabled={pending || isInviting} />
+        <input id="challenge-start-date" type="date" value={startDate} onChange={(event) => setAccountDraft((current) => ({ ...current, startDate: event.target.value }))} required disabled={pending || isInviting} />
         <label htmlFor="challenge-deadline-date">Deadline Date</label>
-        <input id="challenge-deadline-date" type="date" value={deadlineDate} onChange={(event) => setDeadlineDate(event.target.value)} required disabled={pending || isInviting} />
+        <input id="challenge-deadline-date" type="date" value={deadlineDate} onChange={(event) => setAccountDraft((current) => ({ ...current, deadlineDate: event.target.value }))} required disabled={pending || isInviting} />
         {invitationCommand?.status === "rejected" && (
           <p id="invitation-status" className="auth-status error-status" role="alert">{invitationCommand.message}</p>
         )}
@@ -517,10 +563,28 @@ function MemberAccountView({
             Checking whether this completed. <button type="button" className="text-button" onClick={onRetry}>Check again</button>
           </p>
         )}
+        {!invitationCommand || (invitationCommand.status !== "rejected" && invitationCommand.status !== "uncertain")
+          ? <span id="invitation-status" className="visually-hidden">No Invitation result is pending.</span>
+          : null}
         <button type="submit" className="primary-button" disabled={pending || isInviting || !invitedEmail.trim() || !timeZone.trim() || !startDate || !deadlineDate}>
           {isInviting ? "Creating Invitation…" : "Create Invitation"}
         </button>
       </form>
+      <section className="privacy-summary" aria-labelledby="account-deletion-title">
+        <h3 id="account-deletion-title">Delete Member Account</h3>
+        <p>Deletion is a server-side action, not an uninstall. It requires a fresh confirmation and may end shared commitments for both Members. This client never claims local erasure deleted your account.</p>
+        {deletionError && <p className="auth-status error-status" role="alert">{deletionError}</p>}
+        <button type="button" className="danger-button" onClick={() => setConfirmingDeletion(true)}>Start account deletion</button>
+        <ConfirmationDialog
+          open={confirmingDeletion}
+          title="Confirm account deletion"
+          description="Account deletion is irreversible. It erases your identity data, revokes Invitations and sessions, and may end a shared Challenge for both Members after fresh confirmation. Uninstalling is different and does not delete your server account."
+          confirmLabel="Continue to fresh confirmation"
+          cancelLabel="Keep my account"
+          onCancel={() => setConfirmingDeletion(false)}
+          onConfirm={() => { void beginAccountDeletion(); }}
+        />
+      </section>
       <a className="text-button policy-link" href="legal.html" target="_blank" rel="noreferrer">Read Legal and About</a>
       <a className="text-button policy-link" href="privacy.html" target="_blank" rel="noreferrer">
         Read the public privacy policy
@@ -548,6 +612,7 @@ function InvitationView({
 }) {
   const { invitation } = snapshot;
   const [isAccepting, setAccepting] = useState(false);
+  const [confirmingAction, setConfirmingAction] = useState<"revoke" | "decline" | null>(null);
   const isPending = invitation.status === "pending";
   const canAccept = snapshot.actions?.includes("accept") ?? false;
   const canRevoke = snapshot.actions?.includes("revoke") ?? false;
@@ -601,18 +666,33 @@ function InvitationView({
       )}
       {!isPending && <p role="status">This Invitation is {invitation.status} and cannot be changed or accepted.</p>}
       {canRevoke && isPending && (
-        <button type="button" className="primary-button" onClick={() => void onAction({ version: PROTOCOL_VERSION, type: "revoke_invitation", invitationId: invitation.id })}>
+        <button type="button" className="danger-button" onClick={() => setConfirmingAction("revoke")}>
           Revoke Invitation
         </button>
       )}
       {canDecline && isPending && (
-        <button type="button" className="primary-button" onClick={() => void onAction({ version: PROTOCOL_VERSION, type: "decline_invitation", invitationId: invitation.id })}>
+        <button type="button" className="text-button" onClick={() => setConfirmingAction("decline")}>
           Decline Invitation
         </button>
       )}
+      <ConfirmationDialog
+        open={confirmingAction !== null}
+        title={confirmingAction === "revoke" ? "Confirm revocation" : "Confirm decline"}
+        description={confirmingAction === "revoke"
+          ? "Revoking withdraws this Invitation before acceptance. It cannot be reactivated, and no Challenge will be created."
+          : "Declining ends this Invitation before acceptance. It cannot be reactivated, and no Challenge will be created."}
+        confirmLabel={confirmingAction === "revoke" ? "Confirm revocation" : "Confirm decline"}
+        cancelLabel="Keep this Invitation"
+        onCancel={() => setConfirmingAction(null)}
+        onConfirm={() => {
+          const action = confirmingAction;
+          setConfirmingAction(null);
+          if (action) void onAction({ version: PROTOCOL_VERSION, type: action === "revoke" ? "revoke_invitation" : "decline_invitation", invitationId: invitation.id });
+        }}
+      />
       <a className="text-button policy-link" href="legal.html" target="_blank" rel="noreferrer">Read Legal and About</a>
       <a className="text-button policy-link" href="privacy.html" target="_blank" rel="noreferrer">Read the public privacy policy</a>
-      <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
+      <button type="button" className="text-button" onClick={() => void onSignOut()}>Sign out</button>
     </section>
   );
 }
@@ -625,7 +705,7 @@ function ChallengeTerms({ challenge }: { challenge: Extract<AppSnapshot, { kind:
       <div><dt>Start Date</dt><dd>{challenge.startDate}</dd></div>
       <div><dt>Deadline Date</dt><dd>{challenge.deadlineDate}</dd></div>
       <div><dt>Problem Set Version</dt><dd>{challenge.problemSetVersionId}</dd></div>
-      <div><dt>Members</dt><dd>{challenge.members.map((member) => `${member.displayName} (${member.email})`).join(" and ")}</dd></div>
+      <div><dt>Members</dt><dd>{challenge.members.map((member) => member.displayName).join(" and ")}</dd></div>
     </dl>
   );
 }
@@ -639,10 +719,6 @@ function ScheduledView({ snapshot, onSignOut, onCancel, commandOutcome }: {
   const [confirming, setConfirming] = useState(false);
   const canCancel = snapshot.actions?.includes("cancel") ?? false;
   async function cancel() {
-    if (!confirming) {
-      setConfirming(true);
-      return;
-    }
     await onCancel({ version: PROTOCOL_VERSION, type: "cancel_challenge", challengeId: snapshot.challenge.id });
   }
   return (
@@ -654,11 +730,20 @@ function ScheduledView({ snapshot, onSignOut, onCancel, commandOutcome }: {
       {commandOutcome?.status === "rejected" && <p className="auth-status error-status" role="alert">{commandOutcome.message}</p>}
       {commandOutcome?.status === "uncertain" && <p className="auth-status" role="status">Checking whether cancellation completed. Refresh to reconcile both Members.</p>}
       {canCancel && commandOutcome?.status !== "uncertain" && (
-        <button type="button" className="primary-button" onClick={() => void cancel()}>
-          {confirming ? "Confirm cancel for both Members" : "Cancel Challenge"}
+        <button type="button" className="danger-button" onClick={() => setConfirming(true)}>
+          Cancel Challenge
         </button>
       )}
-      <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
+      <ConfirmationDialog
+        open={confirming}
+        title="Confirm cancellation"
+        description="Canceling ends this Scheduled Challenge for both Members, releases both commitments, and keeps a read-only Canceled record. This cannot be undone."
+        confirmLabel="Confirm cancellation"
+        cancelLabel="Keep this Scheduled Challenge"
+        onCancel={() => setConfirming(false)}
+        onConfirm={() => { setConfirming(false); void cancel(); }}
+      />
+      <button type="button" className="text-button" onClick={() => void onSignOut()}>Sign out</button>
       <SnapshotDetails snapshot={snapshot} />
     </section>
   );
@@ -671,8 +756,15 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
   commandOutcome?: CommandOutcome;
 }) {
   const progress = snapshot.progress;
-  const [selectedProblemId, setSelectedProblemId] = useState("");
-  const [affirmed, setAffirmed] = useState(false);
+  const [activeDraft, setActiveDraft, activeDraftStatus, retryActiveDraft] = usePopupDraft("active", {
+    selectedProblemId: "",
+    affirmed: false,
+    correctionSolveId: "",
+    correctionCategory: "reclassified",
+    correctionReason: "",
+    correctionStatus: "not_credited",
+  });
+  const { selectedProblemId, affirmed } = activeDraft;
   const [isSubmitting, setSubmitting] = useState(false);
   const [confirmingAbandon, setConfirmingAbandon] = useState(false);
   const pending = Boolean(snapshot.pendingCommand) || commandOutcome?.status === "uncertain";
@@ -680,10 +772,10 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
   const canAbandon = snapshot.actions?.includes("abandon") ?? false;
   const selectedProblem = PINNED_PROBLEM_SET_VERSION.problems.find((problem) => problem.id === selectedProblemId);
   const solveHistory = snapshot.challenge.solveHistory ?? [];
-  const [correctionSolveId, setCorrectionSolveId] = useState<string | null>(null);
-  const [correctionCategory, setCorrectionCategory] = useState<SolveCorrectionCategory>("reclassified");
-  const [correctionReason, setCorrectionReason] = useState("");
-  const [correctionStatus, setCorrectionStatus] = useState<"credited" | "not_credited">("not_credited");
+  const correctionSolveId = activeDraft.correctionSolveId || null;
+  const correctionCategory = activeDraft.correctionCategory;
+  const correctionReason = activeDraft.correctionReason;
+  const correctionStatus = activeDraft.correctionStatus;
 
   async function creditSolve(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -698,8 +790,7 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
         affirmed: true,
       });
       if (response?.ok && (!response.command || response.command.status === "applied")) {
-        setSelectedProblemId("");
-        setAffirmed(false);
+        setActiveDraft((current) => ({ ...current, selectedProblemId: "", affirmed: false }));
       }
     } finally {
       setSubmitting(false);
@@ -726,16 +817,11 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
       resultingCreditStatus: correctionStatus,
     });
     if (response?.ok && (!response.command || response.command.status === "applied")) {
-      setCorrectionSolveId(null);
-      setCorrectionReason("");
+      setActiveDraft((current) => ({ ...current, correctionSolveId: "", correctionReason: "" }));
     }
   }
 
   async function abandonChallenge() {
-    if (!confirmingAbandon) {
-      setConfirmingAbandon(true);
-      return;
-    }
     await onAction({ version: PROTOCOL_VERSION, type: "abandon_challenge", challengeId: snapshot.challenge.id });
   }
 
@@ -743,9 +829,11 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
     <section className="state-card" aria-labelledby="active-title">
       <p className="eyebrow">ACTIVE CHALLENGE · PET</p>
       <h2 id="active-title">Your Grovekin is {progress.petCondition}</h2>
+      <PopupDraftStatus status={activeDraftStatus} onRetry={retryActiveDraft} />
       <div className={`pet-panel pet-${progress.petCondition}`} aria-label="Pet state">
+        <GrovekinPresentation condition={progress.petCondition} stage={progress.currentEvolutionStage} />
         <p className="pet-condition">{progress.petCondition}</p>
-        <p className="pet-stage">Evolution Stage {progress.currentEvolutionStage}</p>
+        <p className="pet-stage"><strong>Evolution Stage {progress.currentEvolutionStage}</strong> · highest attained Stage {progress.highestEvolutionStage}</p>
         <p className="pair-progress">Pair Progress {progress.pairProgress} / 150</p>
       </div>
       <h3>Both Members’ pace</h3>
@@ -762,21 +850,24 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
       <p className="field-help">Current shared target: {progress.expectedProgress} / 150. Evidence is self-reported and self-attested; no platform access or independent check is used.</p>
       {canCreditSolve ? <form onSubmit={creditSolve} aria-describedby="solve-help solve-status">
         <h3>Credit my solve</h3>
+        <p className="field-help">This unfinished selection is a local draft. It becomes a self-reported Solve only after the authoritative result returns.</p>
         <p id="solve-help" className="field-help">Choose one Problem from pinned version {progress.problemSetVersionId}, then affirm that you completed or recompleted it during this Active Challenge.</p>
         <label htmlFor="solve-problem">Problem</label>
-        <select id="solve-problem" value={selectedProblemId} onChange={(event) => setSelectedProblemId(event.target.value)} disabled={pending || isSubmitting} required>
+        <select id="solve-problem" value={selectedProblemId} onChange={(event) => setActiveDraft((current) => ({ ...current, selectedProblemId: event.target.value }))} disabled={pending || isSubmitting} required>
           <option value="">Select a pinned Problem</option>
           {PINNED_PROBLEM_SET_VERSION.id === progress.problemSetVersionId && PINNED_PROBLEM_SET_VERSION.problems.map((problem) => (
             <option key={problem.id} value={problem.id}>{problem.listOrder}. {problem.title}</option>
           ))}
         </select>
         <label className="check-row">
-          <input type="checkbox" checked={affirmed} onChange={(event) => setAffirmed(event.target.checked)} disabled={pending || isSubmitting} required />
+          <input type="checkbox" checked={affirmed} onChange={(event) => setActiveDraft((current) => ({ ...current, affirmed: event.target.checked }))} disabled={pending || isSubmitting} required />
           <span>I completed or recompleted this Problem during the Active Challenge.</span>
         </label>
         {selectedProblem && <a href={selectedProblem.publicUrl} target="_blank" rel="noreferrer">Open ordinary public Problem link</a>}
         {commandOutcome?.status === "rejected" && <p id="solve-status" className="auth-status error-status" role="alert">{commandOutcome.message}</p>}
         {pending && <p id="solve-status" className="auth-status" role="status">Checking whether this completed. Refresh to reconcile the authoritative Snapshot.</p>}
+        {!pending && !(commandOutcome?.status === "rejected" && commandOutcome.kind === "create_solve")
+          && <span id="solve-status" className="visually-hidden">No Solve result is pending.</span>}
         <button type="submit" className="primary-button" disabled={pending || isSubmitting || !selectedProblemId || !affirmed}>
           {isSubmitting ? "Crediting solve…" : "Credit my solve"}
         </button>
@@ -799,8 +890,7 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
             ))}
             {solve.canCorrect && !correctionPending && (
               <button type="button" className="text-button" onClick={() => {
-                setCorrectionSolveId(solve.id);
-                setCorrectionStatus(solve.creditStatus);
+                setActiveDraft((current) => ({ ...current, correctionSolveId: solve.id, correctionStatus: solve.creditStatus }));
               }}>
                 Correct my Solve
               </button>
@@ -812,22 +902,22 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
             <h4>Correct my Solve</h4>
             <p className="field-help">This records your reason and resulting credit state. It does not delete the original self-attestation.</p>
             <label htmlFor="correction-category">Correction category</label>
-            <select id="correction-category" value={correctionCategory} onChange={(event) => setCorrectionCategory(event.target.value as SolveCorrectionCategory)} disabled={correctionPending}>
+            <select id="correction-category" value={correctionCategory} onChange={(event) => setActiveDraft((current) => ({ ...current, correctionCategory: event.target.value as SolveCorrectionCategory }))} disabled={correctionPending}>
               <option value="reclassified">Reclassified</option>
               <option value="retracted">Retracted</option>
               <option value="restored">Restored</option>
             </select>
             <label htmlFor="correction-status">Resulting credit state</label>
-            <select id="correction-status" value={correctionStatus} onChange={(event) => setCorrectionStatus(event.target.value as "credited" | "not_credited")} disabled={correctionPending}>
+            <select id="correction-status" value={correctionStatus} onChange={(event) => setActiveDraft((current) => ({ ...current, correctionStatus: event.target.value as "credited" | "not_credited" }))} disabled={correctionPending}>
               <option value="credited">Credited</option>
               <option value="not_credited">Not credited</option>
             </select>
             <label htmlFor="correction-reason">Reason</label>
-            <input id="correction-reason" value={correctionReason} onChange={(event) => setCorrectionReason(event.target.value)} maxLength={500} disabled={correctionPending} required />
+            <input id="correction-reason" value={correctionReason} onChange={(event) => setActiveDraft((current) => ({ ...current, correctionReason: event.target.value }))} maxLength={500} disabled={correctionPending} required />
             {commandOutcome?.status === "rejected" && commandOutcome.kind === "correct_solve" && <p className="auth-status error-status" role="alert">{commandOutcome.message}</p>}
             {correctionPending && <p className="auth-status" role="status">Checking whether this correction completed. Refresh to reconcile the authoritative history.</p>}
-            <button type="submit" className="primary-button" disabled={correctionPending || !correctionReason.trim()}>Save correction</button>
-            <button type="button" className="text-button" onClick={() => setCorrectionSolveId(null)} disabled={correctionPending}>Close</button>
+            <button type="submit" className="text-button" disabled={correctionPending || !correctionReason.trim()}>Save correction</button>
+            <button type="button" className="text-button" onClick={() => setActiveDraft((current) => ({ ...current, correctionSolveId: "" }))} disabled={correctionPending}>Close</button>
           </form>
         )}
       </section>
@@ -836,12 +926,21 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
         <section aria-labelledby="abandon-title">
           <h3 id="abandon-title">End this shared Challenge</h3>
           <p className="field-help">Abandoning ends the Challenge for both Members, releases both commitments, and removes the Pet. The read-only record is preserved.</p>
-          <button type="button" className="primary-button" onClick={() => void abandonChallenge()} disabled={pending}>
-            {confirmingAbandon ? "Confirm abandonment for both Members" : "Abandon Challenge"}
+          <button type="button" className="danger-button" onClick={() => setConfirmingAbandon(true)} disabled={pending}>
+            Abandon Challenge
           </button>
         </section>
       )}
-      <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
+      <ConfirmationDialog
+        open={confirmingAbandon}
+        title="Confirm abandonment"
+        description="Abandoning ends this Active Challenge for both Members, releases both commitments, removes the Pet, and preserves a read-only Abandoned record. This cannot be undone."
+        confirmLabel="Confirm abandonment"
+        cancelLabel="Keep this Active Challenge"
+        onCancel={() => setConfirmingAbandon(false)}
+        onConfirm={() => { setConfirmingAbandon(false); void abandonChallenge(); }}
+      />
+      <button type="button" className="text-button" onClick={() => void onSignOut()}>Sign out</button>
       <SnapshotDetails snapshot={snapshot} />
     </section>
   );
@@ -853,14 +952,18 @@ function TerminalChallengeView({ snapshot, onSignOut, onAction, commandOutcome }
   onAction: (request: PopupRequest) => Promise<PopupResponse | undefined>;
   commandOutcome?: CommandOutcome;
 }) {
-  const [restartStartDate, setRestartStartDate] = useState("");
-  const [restartDeadlineDate, setRestartDeadlineDate] = useState("");
+  const [terminalDraft, setTerminalDraft, terminalDraftStatus, retryTerminalDraft] = usePopupDraft("terminal", {
+    restartStartDate: "",
+    restartDeadlineDate: "",
+  });
+  const { restartStartDate, restartDeadlineDate } = terminalDraft;
   const [restartSubmitting, setRestartSubmitting] = useState(false);
   const challenge = snapshot.challenge;
   if (!challenge) return null;
   const partner = challenge.viewerMemberId
     ? challenge.members.find((member) => member.memberId !== challenge.viewerMemberId)
     : undefined;
+  const memberName = (memberId: string) => challenge.members.find((member) => member.memberId === memberId)?.displayName ?? "Member";
   const challengeTimeZone = challenge.timeZone;
   async function restart(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -890,28 +993,29 @@ function TerminalChallengeView({ snapshot, onSignOut, onAction, commandOutcome }
     <section className="state-card" aria-labelledby="terminal-title">
       <p className="eyebrow">CHALLENGE ENDED</p>
       <h2 id="terminal-title">{title}</h2>
+      <PopupDraftStatus status={terminalDraftStatus} onRetry={retryTerminalDraft} />
       <ChallengeTerms challenge={challenge} />
       {challenge.status === "completed" && challenge.completionFarewellAt && (
         <p role="status">Both Members reached 150. Your Grovekin has completed its farewell and the Pet is now gone.</p>
       )}
       {challenge.status === "incomplete" && <p role="status">The hard deadline passed before both Members reached 150. The Pet ended gently without penalty.</p>}
       {challenge.status === "abandoned" && <p role="status">A Member ended the shared Challenge. The Pet ended gently and both Members are free to commit again.</p>}
-      {challenge.finalTotals && <p>Final credited totals: {challenge.finalTotals.map((total) => `${total.memberId} ${total.creditedTotal} / 150`).join(" · ")}</p>}
+      {challenge.finalTotals && <p>Final credited totals: {challenge.finalTotals.map((total) => `${memberName(total.memberId)} ${total.creditedTotal} / 150`).join(" · ")}</p>}
       <p>This Challenge is read-only and cannot be reactivated. Restart creates a new Invitation and a new Challenge.</p>
       {partner && <form onSubmit={restart} aria-label="Restart Challenge">
         <h3>Restart with this partner</h3>
-        <p className="field-help">This creates a distinct Invitation with zero progress. Choose fresh dates; the prior Challenge remains closed.</p>
+        <p className="field-help">New dates remain a local draft until a fresh Invitation is returned. This creates a distinct Invitation with zero progress; the prior Challenge stays closed.</p>
         <label htmlFor="restart-start-date">New Start Date</label>
-        <input id="restart-start-date" type="date" value={restartStartDate} onChange={(event) => setRestartStartDate(event.target.value)} required disabled={restartSubmitting} />
+        <input id="restart-start-date" type="date" value={restartStartDate} onChange={(event) => setTerminalDraft((current) => ({ ...current, restartStartDate: event.target.value }))} required disabled={restartSubmitting} />
         <label htmlFor="restart-deadline-date">New Deadline Date</label>
-        <input id="restart-deadline-date" type="date" value={restartDeadlineDate} onChange={(event) => setRestartDeadlineDate(event.target.value)} required disabled={restartSubmitting} />
+        <input id="restart-deadline-date" type="date" value={restartDeadlineDate} onChange={(event) => setTerminalDraft((current) => ({ ...current, restartDeadlineDate: event.target.value }))} required disabled={restartSubmitting} />
         {commandOutcome?.status === "rejected" && commandOutcome.kind === "create_invitation" && <p className="auth-status error-status" role="alert">{commandOutcome.message}</p>}
         {commandOutcome?.status === "uncertain" && commandOutcome.kind === "create_invitation" && <p className="auth-status" role="status">Checking whether the fresh Invitation completed. Refresh to reconcile both Members.</p>}
         <button type="submit" className="primary-button" disabled={restartSubmitting || !restartStartDate || !restartDeadlineDate}>
           {restartSubmitting ? "Creating fresh Invitation…" : "Restart Challenge"}
         </button>
       </form>}
-      <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
+      <button type="button" className="text-button" onClick={() => void onSignOut()}>Sign out</button>
       <SnapshotDetails snapshot={snapshot} />
     </section>
   );
@@ -924,6 +1028,17 @@ export function App() {
   const [commandOutcome, setCommandOutcome] = useState<CommandOutcome | undefined>();
   const [realtimeStatus, setRealtimeStatus] = useState<"connecting" | "subscribed" | "closed" | "error">("connecting");
   const [refreshing, setRefreshing] = useState(false);
+  const mainRef = useRef<HTMLElement>(null);
+  const stateKey = state.status === "loaded"
+    ? `${state.snapshot.kind}:${state.snapshot.freshness.revision}`
+    : state.status;
+  useLayoutEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const target = previous?.isConnected && previous !== document.body && previous !== document.documentElement
+      ? previous
+      : mainRef.current;
+    target?.focus({ preventScroll: true });
+  }, [stateKey]);
 
   const loadSnapshot = useCallback(() => {
     // Hide an already-rendered domain view during invalidation/focus refetches;
@@ -992,6 +1107,10 @@ export function App() {
         return response;
       }
       if (response.auth) setAuthState(response.auth);
+      if (response.ok && request.type === "create_member_account") clearPopupDraft("setup");
+      if (response.ok && response.command?.status === "applied") {
+        for (const kind of draftKindsForRequest(request)) clearPopupDraft(kind);
+      }
       if ("command" in response && response.command && !response.snapshot) {
         setCommandOutcome(response.command);
       }
@@ -1083,11 +1202,11 @@ export function App() {
   }, [loadSnapshot]);
 
   return (
-    <main>
+     <main ref={mainRef} role="main" tabIndex={-1} aria-labelledby="app-title">
       <header className="app-header">
         <div>
           <p className="eyebrow">LARP-CODE</p>
-          <h1>Shared progress, made visible.</h1>
+           <h1 id="app-title">Shared progress, made visible.</h1>
         </div>
         <span className="version">v{__CLIENT_VERSION__}</span>
       </header>

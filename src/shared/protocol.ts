@@ -439,8 +439,43 @@ export type PopupRequest =
   | ({ version: ProtocolVersion; type: "correct_solve" } & SolveCorrectionIntent)
   | {
       version: ProtocolVersion;
-      type: "sign_out" | "request_update" | "erase_local_data";
+      type: "sign_out" | "request_update" | "erase_local_data" | "begin_account_deletion";
+    }
+  | {
+      version: ProtocolVersion;
+      type: "get_drafts";
+    }
+  | {
+      version: ProtocolVersion;
+      type: "save_draft";
+      draft: PopupDraft;
+    }
+  | {
+      version: ProtocolVersion;
+      type: "clear_draft";
+      kind: PopupDraftKind;
     };
+
+export type PopupDraftKind = "signed_out" | "setup" | "account" | "active" | "terminal";
+export type PopupDraftValues = {
+  signed_out: Readonly<{ email: string; isSignInFormVisible: boolean }>;
+  setup: Readonly<{ displayName: string; adultConfirmed: boolean; consentAccepted: boolean }>;
+  account: Readonly<{ displayName: string; invitedEmail: string; timeZone: string; startDate: string; deadlineDate: string }>;
+  active: Readonly<{
+    selectedProblemId: string;
+    affirmed: boolean;
+    correctionSolveId: string;
+    correctionCategory: SolveCorrectionCategory;
+    correctionReason: string;
+    correctionStatus: SolveCreditStatus;
+  }>;
+  terminal: Readonly<{ restartStartDate: string; restartDeadlineDate: string }>;
+};
+export type PopupDraft<K extends PopupDraftKind = PopupDraftKind> = K extends PopupDraftKind
+  ? Readonly<{ kind: K; values: PopupDraftValues[K] }>
+  : never;
+export type PopupDrafts = Partial<{ [K in PopupDraftKind]: PopupDraftValues[K] }>;
+export type PopupDraftSaveReceipt = Readonly<{ kind: PopupDraftKind; status: "saved" }>;
 
 export type ProtocolErrorCode =
   | "bad_request"
@@ -456,7 +491,7 @@ export type ProtocolError = {
 };
 
 export type PopupResponse =
-  | { ok: true; snapshot?: AppSnapshot; auth?: SignInState; command?: CommandOutcome }
+  | { ok: true; snapshot?: AppSnapshot; auth?: SignInState; command?: CommandOutcome; drafts?: PopupDrafts; draft?: PopupDraftSaveReceipt }
   | { ok: false; error: ProtocolError };
 
 export type WorkerEvent =
@@ -806,8 +841,16 @@ function isSnapshot(value: unknown): value is AppSnapshot {
 export function isPopupRequest(value: unknown): value is PopupRequest {
   if (!isRecord(value) || value.version !== PROTOCOL_VERSION || typeof value.type !== "string") return false;
   if (value.type === "get_snapshot" || value.type === "sign_out"
-    || value.type === "request_update" || value.type === "erase_local_data") {
+    || value.type === "request_update" || value.type === "erase_local_data"
+    || value.type === "begin_account_deletion" || value.type === "get_drafts") {
     return hasExactKeys(value, ["version", "type"]);
+  }
+  if (value.type === "save_draft") {
+    return hasExactKeys(value, ["version", "type", "draft"]) && isPopupDraft(value.draft);
+  }
+  if (value.type === "clear_draft") {
+    return hasExactKeys(value, ["version", "type", "kind"])
+      && POPUP_DRAFT_KINDS.includes(value.kind as PopupDraftKind);
   }
   if (value.type === "request_email_otp" || value.type === "resend_email_otp") {
     return hasExactKeys(value, ["version", "type", "email"]) && isString(value.email);
@@ -867,25 +910,94 @@ function isSignInState(value: unknown): value is SignInState {
       && optionalValue >= 0;
 }
 
+const POPUP_DRAFT_KINDS: readonly PopupDraftKind[] = ["signed_out", "setup", "account", "active", "terminal"];
+
+function isBoundedString(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 2_000;
+}
+
+function isSignedOutDraftValues(value: unknown): value is PopupDraftValues["signed_out"] {
+  return isRecord(value) && hasExactKeys(value, ["email", "isSignInFormVisible"])
+    && isBoundedString(value.email) && typeof value.isSignInFormVisible === "boolean";
+}
+
+function isSetupDraftValues(value: unknown): value is PopupDraftValues["setup"] {
+  return isRecord(value) && hasExactKeys(value, ["displayName", "adultConfirmed", "consentAccepted"])
+    && isBoundedString(value.displayName)
+    && typeof value.adultConfirmed === "boolean"
+    && typeof value.consentAccepted === "boolean";
+}
+
+function isAccountDraftValues(value: unknown): value is PopupDraftValues["account"] {
+  return isRecord(value) && hasExactKeys(value, ["displayName", "invitedEmail", "timeZone", "startDate", "deadlineDate"])
+    && isBoundedString(value.displayName) && isBoundedString(value.invitedEmail)
+    && isBoundedString(value.timeZone) && isBoundedString(value.startDate) && isBoundedString(value.deadlineDate);
+}
+
+function isActiveDraftValues(value: unknown): value is PopupDraftValues["active"] {
+  return isRecord(value) && hasExactKeys(value, ["selectedProblemId", "affirmed", "correctionSolveId", "correctionCategory", "correctionReason", "correctionStatus"])
+    && isBoundedString(value.selectedProblemId) && typeof value.affirmed === "boolean"
+    && isBoundedString(value.correctionSolveId)
+    && ["retracted", "reclassified", "restored"].includes(String(value.correctionCategory))
+    && isBoundedString(value.correctionReason)
+    && ["credited", "not_credited"].includes(String(value.correctionStatus));
+}
+
+function isTerminalDraftValues(value: unknown): value is PopupDraftValues["terminal"] {
+  return isRecord(value) && hasExactKeys(value, ["restartStartDate", "restartDeadlineDate"])
+    && isBoundedString(value.restartStartDate) && isBoundedString(value.restartDeadlineDate);
+}
+
+function isDraftValues(kind: PopupDraftKind, value: unknown): boolean {
+  switch (kind) {
+    case "signed_out": return isSignedOutDraftValues(value);
+    case "setup": return isSetupDraftValues(value);
+    case "account": return isAccountDraftValues(value);
+    case "active": return isActiveDraftValues(value);
+    case "terminal": return isTerminalDraftValues(value);
+  }
+}
+
+export function isPopupDraft(value: unknown): value is PopupDraft {
+  return isRecord(value)
+    && hasExactKeys(value, ["kind", "values"])
+    && POPUP_DRAFT_KINDS.includes(value.kind as PopupDraftKind)
+    && isDraftValues(value.kind as PopupDraftKind, value.values);
+}
+
+function isPopupDrafts(value: unknown): value is PopupDrafts {
+  if (!isRecord(value)) return false;
+  return Object.entries(value).every(([kind, draft]) => POPUP_DRAFT_KINDS.includes(kind as PopupDraftKind)
+    && isDraftValues(kind as PopupDraftKind, draft));
+}
+
+function isPopupDraftSaveReceipt(value: unknown): value is PopupDraftSaveReceipt {
+  return isRecord(value) && hasExactKeys(value, ["kind", "status"])
+    && POPUP_DRAFT_KINDS.includes(value.kind as PopupDraftKind)
+    && value.status === "saved";
+}
+
 export function isPopupResponse(value: unknown): value is PopupResponse {
   if (!isRecord(value) || typeof value.ok !== "boolean") return false;
   if (value.ok) {
     const hasSnapshot = value.snapshot !== undefined;
     const hasAuth = value.auth !== undefined;
     const hasCommand = value.command !== undefined;
-    if (!hasSnapshot && !hasAuth && !hasCommand) return false;
+    const hasDrafts = value.drafts !== undefined;
+    const hasDraft = value.draft !== undefined;
+    if (!hasSnapshot && !hasAuth && !hasCommand && !hasDrafts && !hasDraft) return false;
     if (hasSnapshot && !isSnapshot(value.snapshot)) return false;
     if (hasAuth && !isSignInState(value.auth)) return false;
     if ("command" in value && !isCommandOutcome(value.command)) return false;
-    const expectedKeys = hasSnapshot && hasAuth
-      ? ["ok", "snapshot", "auth"]
-      : hasSnapshot
-        ? ["ok", "snapshot"]
-        : hasAuth
-          ? ["ok", "auth"]
-          : ["ok", "command"];
-    const expectedWithCommand = hasSnapshot ? [...expectedKeys, "command"] : expectedKeys;
-    return hasExactKeys(value, expectedKeys) || hasExactKeys(value, expectedWithCommand);
+    if (hasDrafts && !isPopupDrafts(value.drafts)) return false;
+    if (hasDraft && !isPopupDraftSaveReceipt(value.draft)) return false;
+    const expectedKeys = ["ok"]
+      .concat(hasSnapshot ? ["snapshot"] : [])
+      .concat(hasAuth ? ["auth"] : [])
+      .concat(hasCommand ? ["command"] : [])
+      .concat(hasDrafts ? ["drafts"] : [])
+      .concat(hasDraft ? ["draft"] : []);
+    return hasExactKeys(value, expectedKeys);
   }
   if (!hasExactKeys(value, ["ok", "error"]) || !isRecord(value.error)) return false;
   if (!hasExactKeys(value.error, ["code", "message"]) && !hasExactKeys(value.error, ["code", "message", "diagnosticId"])) return false;
