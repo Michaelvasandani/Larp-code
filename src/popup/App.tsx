@@ -463,11 +463,16 @@ function MemberAccountView({
 function InvitationView({
   snapshot,
   onSignOut,
+  onAction,
 }: {
   snapshot: Extract<AppSnapshot, { kind: "invitation" }>;
   onSignOut: () => Promise<void>;
+  onAction: (request: PopupRequest) => Promise<void>;
 }) {
   const { invitation } = snapshot;
+  const isPending = invitation.status === "pending";
+  const canRevoke = snapshot.actions?.includes("revoke") ?? false;
+  const canDecline = snapshot.actions?.includes("decline") ?? false;
   return (
     <section className="state-card" aria-labelledby="invitation-title">
       <p className="eyebrow">INVITATION</p>
@@ -484,6 +489,17 @@ function InvitationView({
         <div><dt>Problem Set Version</dt><dd>{invitation.problemSetVersionId}</dd></div>
       </dl>
       <p>Both Members will have equal authority after acceptance. Either Member can end the shared Challenge.</p>
+      {!isPending && <p role="status">This Invitation is {invitation.status} and cannot be changed or accepted.</p>}
+      {canRevoke && isPending && (
+        <button type="button" className="primary-button" onClick={() => void onAction({ version: PROTOCOL_VERSION, type: "revoke_invitation", invitationId: invitation.id })}>
+          Revoke Invitation
+        </button>
+      )}
+      {canDecline && isPending && (
+        <button type="button" className="primary-button" onClick={() => void onAction({ version: PROTOCOL_VERSION, type: "decline_invitation", invitationId: invitation.id })}>
+          Decline Invitation
+        </button>
+      )}
       <a className="text-button policy-link" href="legal.html" target="_blank" rel="noreferrer">Read Legal and About</a>
       <a className="text-button policy-link" href="privacy.html" target="_blank" rel="noreferrer">Read the public privacy policy</a>
       <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
@@ -522,7 +538,7 @@ export function App() {
       setAuthState({ status: "requesting_code" });
     }
     if (request.type === "create_member_account") setSetupError(undefined);
-    if (request.type === "update_display_name") setCommandOutcome(undefined);
+    if (request.type === "update_display_name" || request.type === "revoke_invitation" || request.type === "decline_invitation") setCommandOutcome(undefined);
     try {
       const response = await sendRequest(request);
       if (!response.ok) {
@@ -627,7 +643,7 @@ export function App() {
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "invitation" && (
-        <InvitationView snapshot={state.snapshot} onSignOut={signOut} />
+        <InvitationView snapshot={state.snapshot} onSignOut={signOut} onAction={sendAuthAction} />
       )}
 
       {state.status === "loaded"

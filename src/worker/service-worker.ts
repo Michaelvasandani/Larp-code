@@ -28,8 +28,11 @@ import {
 } from "./command-recovery";
 import {
   createInvitationCommandAdapter,
+  createInvitationTerminalCommandAdapter,
   parseInvitation,
   type CreateInvitationRpc,
+  type InvitationTerminalRpc,
+  type InvitationRecord,
 } from "./invitation";
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
@@ -153,12 +156,52 @@ const invitationCommandRpc: CreateInvitationRpc = {
     return data === null ? null : parseInvitation(data);
   },
 };
+const invitationTerminalRpc: InvitationTerminalRpc = {
+  async revokeInvitation(input) {
+    const { data, error } = await client.rpc("revoke_invitation_v1", {
+      p_idempotency_key: input.idempotencyKey,
+      p_command_version: input.commandVersion,
+      p_command_kind: input.commandKind,
+      p_member_id: input.memberId,
+      p_member_email: input.memberEmail,
+      p_invitation_id: input.invitationId,
+    });
+    if (error) throw error;
+    return parseInvitation(data);
+  },
+  async declineInvitation(input) {
+    const { data, error } = await client.rpc("decline_invitation_v1", {
+      p_idempotency_key: input.idempotencyKey,
+      p_command_version: input.commandVersion,
+      p_command_kind: input.commandKind,
+      p_member_id: input.memberId,
+      p_member_email: input.memberEmail,
+      p_invitation_id: input.invitationId,
+    });
+    if (error) throw error;
+    return parseInvitation(data);
+  },
+  async getInvitation(invitationId) {
+    const { data, error } = await client.rpc("get_invitation_v1", { p_invitation_id: invitationId });
+    if (error) throw error;
+    return data === null ? null : parseInvitation(data);
+  },
+  async getPendingOutgoingInvitation() {
+    const { data, error } = await client.rpc("get_pending_outgoing_invitation_v1");
+    if (error) throw error;
+    return data === null ? null : parseInvitation(data);
+  },
+};
 const displayNameCommands = createDisplayNameCommandAdapter({
   rpc: displayNameCommandRpc,
   storage: memberStorage,
 });
 const invitationCommands = createInvitationCommandAdapter({
   rpc: invitationCommandRpc,
+  storage: memberStorage,
+});
+const invitationTerminalCommands = createInvitationTerminalCommandAdapter({
+  rpc: invitationTerminalRpc,
   storage: memberStorage,
 });
 const bootId = crypto.randomUUID();
@@ -245,8 +288,27 @@ async function withAuthenticatedMember<T>(operation: (member: AuthenticatedMembe
 
 type CommandResult =
   | { kind: "update_display_name"; result: Awaited<ReturnType<typeof displayNameCommands.updateDisplayName>> }
-  | { kind: "create_invitation"; result: Awaited<ReturnType<typeof invitationCommands.createInvitation>> };
-type AppliedInvitationResult = Extract<Extract<CommandResult, { kind: "create_invitation" }>['result'], { status: "applied" }>;
+  | { kind: "create_invitation"; result: Awaited<ReturnType<typeof invitationCommands.createInvitation>> }
+  | { kind: "revoke_invitation" | "decline_invitation"; result: Awaited<ReturnType<typeof invitationTerminalCommands.revokeInvitation>> };
+type AppliedInvitationCommand = Extract<CommandResult, { kind: "create_invitation" | "revoke_invitation" | "decline_invitation" }>;
+type AppliedInvitationResult = Extract<AppliedInvitationCommand["result"], { status: "applied" }>;
+
+function invitationSnapshot(
+  health: FoundationHealth,
+  worker: WorkerEvidence,
+  invitation: InvitationRecord,
+  role: "inviter" | "invitee",
+): AppSnapshot {
+  return {
+    ...snapshotMetadata(health, worker, null),
+    kind: "invitation",
+    invitation,
+    role,
+    actions: invitation.status === "pending"
+      ? role === "inviter" ? ["revoke"] : ["accept", "decline"]
+      : [],
+  };
+}
 
 async function respondToCommand(
   command: CommandResult,
@@ -278,7 +340,7 @@ async function respondToCommand(
       command: { status: "rejected", kind: command.kind, code: command.result.code, message: command.result.message },
     };
   }
-  if (command.kind === "create_invitation" && buildAppliedSnapshot) {
+  if ((command.kind === "create_invitation" || command.kind === "revoke_invitation" || command.kind === "decline_invitation") && buildAppliedSnapshot) {
     snapshot = await buildAppliedSnapshot(
       command.result as AppliedInvitationResult,
     );
@@ -312,6 +374,7 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
   if (reconcilePending) {
     await displayNameCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
     await invitationCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
+    await invitationTerminalCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
   }
   const account = await memberAccount.getMemberAccount();
   if (!account) {
@@ -320,11 +383,29 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     if (!email) throw new Error("The authenticated session has no verified email.");
     return { ...snapshotMetadata(health, worker, null), kind: "setup_required", email };
   }
+  const pendingCommand = await displayNameCommands.readPending()
+    ?? await invitationCommands.readPending()
+    ?? await invitationTerminalCommands.readPending();
   const incomingInvitation = await invitationCommandRpc.getPendingInvitation?.();
   if (incomingInvitation) {
-    return { ...snapshotMetadata(health, worker, null), kind: "invitation", invitation: incomingInvitation };
+    return {
+      ...snapshotMetadata(health, worker, pendingCommand),
+      kind: "invitation",
+      invitation: incomingInvitation,
+      role: "invitee",
+      actions: ["accept", "decline"],
+    };
   }
-  const pendingCommand = await displayNameCommands.readPending();
+  const outgoingInvitation = await invitationTerminalRpc.getPendingOutgoingInvitation?.();
+  if (outgoingInvitation) {
+    return {
+      ...snapshotMetadata(health, worker, pendingCommand),
+      kind: "invitation",
+      invitation: outgoingInvitation,
+      role: "inviter",
+      actions: ["revoke"],
+    };
+  }
   const metadata = snapshotMetadata(health, worker, pendingCommand);
   return { ...metadata, kind: "account", account };
 }
@@ -395,7 +476,28 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
             async (applied) => {
               const health = await readFoundationHealth();
               const worker = await workerEvidencePromise;
-              return { ...snapshotMetadata(health, worker, null), kind: "invitation", invitation: applied.invitation };
+              return invitationSnapshot(health, worker, applied.invitation, "inviter");
+            },
+          );
+        });
+      }
+      case "revoke_invitation":
+      case "decline_invitation": {
+        return withAuthenticatedMember(async ({ identity }) => {
+          const result = request.type === "revoke_invitation"
+            ? await invitationTerminalCommands.revokeInvitation(request.invitationId, identity)
+            : await invitationTerminalCommands.declineInvitation(request.invitationId, identity);
+          return respondToCommand(
+            { kind: request.type, result },
+            async (applied) => {
+              const health = await readFoundationHealth();
+              const worker = await workerEvidencePromise;
+              return invitationSnapshot(
+                health,
+                worker,
+                applied.invitation,
+                request.type === "revoke_invitation" ? "inviter" : "invitee",
+              );
             },
           );
         });
