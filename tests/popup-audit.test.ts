@@ -6,6 +6,7 @@ const popupSource = [
   "ConfirmationDialog.tsx",
   "drafts.tsx",
   "GrovekinPresentation.tsx",
+  "grovekin-clips.ts",
 ].map((file) => readFileSync(new URL(`../src/popup/${file}`, import.meta.url), "utf8")).join("\n");
 const popupStyles = readFileSync(new URL("../src/popup/popup.css", import.meta.url), "utf8");
 
@@ -57,5 +58,23 @@ describe("Accessible popup state seam", () => {
     expect(popupStyles).toContain("max-width: 800px");
     expect(popupStyles).toContain("overflow-y: auto");
     expect(popupStyles).toContain("button:focus-visible");
+  });
+});
+
+describe("Grovekin production popup seam", () => {
+  it("keeps the completion farewell transient while terminal content remains pet-free", () => {
+    expect(popupSource).toContain("farewellRevision");
+    expect(popupSource).toContain("setFarewellRevision(null)");
+    expect(popupSource).toContain('transition="stage-4-farewell"');
+    expect(popupSource).toContain("Grovekin completion farewell");
+  });
+
+  it("uses generated pixel assets and an explicit reduced-motion static fallback", () => {
+    expect(popupSource).toContain("clip-registry.json");
+    expect(popupSource).toContain("assets/grovekin/");
+    expect(popupSource).toContain("prefers-reduced-motion: reduce");
+    expect(popupStyles).toContain("image-rendering: pixelated");
+    expect(popupStyles).toContain("width: 160px");
+    expect(popupStyles).toContain("height: 160px");
   });
 });

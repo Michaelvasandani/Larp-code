@@ -19,6 +19,7 @@ import { preserveSignedOutAuthState } from "./auth-state";
 import { ConfirmationDialog } from "./ConfirmationDialog";
 import { clearPopupDraft, PopupDraftStatus, usePopupDraft } from "./drafts";
 import { GrovekinPresentation } from "./GrovekinPresentation";
+import { deriveGrovekinTransition, type GrovekinTransition } from "./grovekin-motion";
 import { commandKindForRequest, draftKindsForRequest, isDomainMutation } from "./request-metadata";
 
 type LoadState =
@@ -749,11 +750,12 @@ function ScheduledView({ snapshot, onSignOut, onCancel, commandOutcome }: {
   );
 }
 
-function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
+function ActiveView({ snapshot, onSignOut, onAction, commandOutcome, grovekinTransition }: {
   snapshot: Extract<AppSnapshot, { kind: "active" }>;
   onSignOut: () => Promise<PopupResponse | undefined>;
   onAction: (request: PopupRequest) => Promise<PopupResponse | undefined>;
   commandOutcome?: CommandOutcome;
+  grovekinTransition: GrovekinTransition;
 }) {
   const progress = snapshot.progress;
   const [activeDraft, setActiveDraft, activeDraftStatus, retryActiveDraft] = usePopupDraft("active", {
@@ -831,7 +833,7 @@ function ActiveView({ snapshot, onSignOut, onAction, commandOutcome }: {
       <h2 id="active-title">Your Grovekin is {progress.petCondition}</h2>
       <PopupDraftStatus status={activeDraftStatus} onRetry={retryActiveDraft} />
       <div className={`pet-panel pet-${progress.petCondition}`} aria-label="Pet state">
-        <GrovekinPresentation condition={progress.petCondition} stage={progress.currentEvolutionStage} />
+        <GrovekinPresentation condition={progress.petCondition} stage={progress.currentEvolutionStage} transition={grovekinTransition} />
         <p className="pet-condition">{progress.petCondition}</p>
         <p className="pet-stage"><strong>Evolution Stage {progress.currentEvolutionStage}</strong> · highest attained Stage {progress.highestEvolutionStage}</p>
         <p className="pair-progress">Pair Progress {progress.pairProgress} / 150</p>
@@ -1029,9 +1031,32 @@ export function App() {
   const [realtimeStatus, setRealtimeStatus] = useState<"connecting" | "subscribed" | "closed" | "error">("connecting");
   const [refreshing, setRefreshing] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
+  const [farewellRevision, setFarewellRevision] = useState<string | null>(null);
+  const farewellTriggerRef = useRef<string | null>(null);
+  const farewellTimerRef = useRef<number | undefined>(undefined);
+  const previousSnapshotRef = useRef<AppSnapshot | undefined>(undefined);
   const stateKey = state.status === "loaded"
     ? `${state.snapshot.kind}:${state.snapshot.freshness.revision}`
     : state.status;
+  const grovekinTransition = state.status === "loaded"
+    ? deriveGrovekinTransition(previousSnapshotRef.current, state.snapshot)
+    : "none";
+  useEffect(() => {
+    if (state.status === "loaded") previousSnapshotRef.current = state.snapshot;
+  }, [state]);
+  useEffect(() => {
+    if (state.status !== "loaded" || state.snapshot.kind !== "terminal" || grovekinTransition !== "stage-4-farewell") return undefined;
+    const revision = state.snapshot.freshness.revision;
+    if (farewellTriggerRef.current === revision) return undefined;
+    farewellTriggerRef.current = revision;
+    if (farewellTimerRef.current !== undefined) window.clearTimeout(farewellTimerRef.current);
+    setFarewellRevision(revision);
+    farewellTimerRef.current = window.setTimeout(() => {
+      setFarewellRevision(null);
+      farewellTimerRef.current = undefined;
+    }, 1_420);
+    return undefined;
+  }, [grovekinTransition, state]);
   useLayoutEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const target = previous?.isConnected && previous !== document.body && previous !== document.documentElement
@@ -1230,6 +1255,11 @@ export function App() {
       )}
 
       <div style={{ display: refreshing ? "none" : undefined }} aria-hidden={refreshing}>
+      {state.status === "loaded" && state.snapshot.kind === "terminal" && farewellRevision === state.snapshot.freshness.revision && (
+        <div className="grovekin-farewell-overlay" role="status" aria-label="Grovekin completion farewell">
+          <GrovekinPresentation condition="healthy" stage={4} transition="stage-4-farewell" />
+        </div>
+      )}
       {state.status === "loaded" && state.snapshot.kind === "signed_out" && (
         <SignedOut snapshot={state.snapshot} onRetry={loadSnapshot} authState={authState} onAction={sendAuthAction} />
       )}
@@ -1257,7 +1287,7 @@ export function App() {
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "active" && (
-        <ActiveView snapshot={state.snapshot} onSignOut={signOut} onAction={sendAuthAction} commandOutcome={commandOutcome} />
+        <ActiveView snapshot={state.snapshot} onSignOut={signOut} onAction={sendAuthAction} commandOutcome={commandOutcome} grovekinTransition={grovekinTransition} />
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "terminal" && (

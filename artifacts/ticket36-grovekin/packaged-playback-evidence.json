@@ -1,0 +1,29 @@
+{
+  "generatedBy": "scripts/grovekin-evidence.mjs",
+  "package": "dist",
+  "viewport": { "width": 380, "height": 600, "cssPetSize": "160x160", "imageRendering": "pixelated" },
+  "matrix": {
+    "stages": [1, 2, 3, 4],
+    "conditions": ["healthy", "hungry", "sad", "deteriorated"],
+    "screenshotsDirectory": "screenshots/"
+  },
+  "playback": {
+    "idleLoop": "screenshots/playback-stage-2-idle-blink.png",
+    "solveReaction": "screenshots/playback-solve-stage-3-reaction.png",
+    "evolutionTransition": "screenshots/playback-evolution-stage-2-to-3.png",
+    "farewellTransient": "screenshots/playback-stage-4-farewell-transient.png",
+    "reducedMotionStatic": "screenshots/reduced-motion-stage-4-deteriorated-static.png"
+  },
+  "assets": {
+    "manifest": "dist/assets/grovekin/manifest.json",
+    "animationChecksums": "dist/assets/grovekin/animation-checksums.sha256",
+    "stillContactSheet": "art/grovekin/generated/contact-sheet.png",
+    "animationSpritesheet": "art/grovekin/generated/spritesheet/grovekin-animations.png"
+  },
+  "review": {
+    "authoritativeTransitionsOnly": true,
+    "staticStageConditionStillRetained": true,
+    "terminalPetPersists": false,
+    "outsideAssets": false
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "canvas": { "width": 48, "height": 48 },
+  "templates": {
+    "idle": {
+      "kind": "idle",
+      "event": null,
+      "loop": true,
+      "frames": [
+        { "id": "open", "durationMs": 700 },
+        { "id": "blink", "durationMs": 140 }
+      ]
+    },
+    "accent": {
+      "kind": "condition-accent",
+      "event": "condition",
+      "loop": false,
+      "frames": [
+        { "id": "rest", "durationMs": 220 },
+        { "id": "accent", "durationMs": 280 }
+      ]
+    },
+    "solve": {
+      "kind": "solve-reaction",
+      "event": "authoritative-solve",
+      "loop": false,
+      "frames": [
+        { "id": "rest", "durationMs": 160 },
+        { "id": "celebrate", "durationMs": 260 },
+        { "id": "rest-final", "durationMs": 180 }
+      ]
+    },
+    "evolution": {
+      "kind": "evolution-transition",
+      "event": "authoritative-evolution",
+      "loop": false,
+      "frames": [
+        { "id": "before", "durationMs": 180 },
+        { "id": "grow", "durationMs": 320 },
+        { "id": "after", "durationMs": 240 }
+      ]
+    },
+    "farewell": {
+      "kind": "farewell",
+      "event": "authoritative-farewell",
+      "loop": false,
+      "frames": [
+        { "id": "present", "durationMs": 220 },
+        { "id": "bow", "durationMs": 340 },
+        { "id": "fade", "durationMs": 300 }
+      ]
+    }
+  },
+  "clips": [
+    { "id": "stage-1-idle", "template": "idle", "stage": 1, "condition": "healthy" },
+    { "id": "stage-2-idle", "template": "idle", "stage": 2, "condition": "healthy" },
+    { "id": "stage-3-idle", "template": "idle", "stage": 3, "condition": "healthy" },
+    { "id": "stage-4-idle", "template": "idle", "stage": 4, "condition": "healthy" },
+    { "id": "hungry-accent", "template": "accent", "condition": "hungry", "stages": [1, 2, 3, 4] },
+    { "id": "sad-accent", "template": "accent", "condition": "sad", "stages": [1, 2, 3, 4] },
+    { "id": "deteriorated-accent", "template": "accent", "condition": "deteriorated", "stages": [1, 2, 3, 4] },
+    { "id": "solve-reaction", "template": "solve", "condition": "healthy", "stages": [1, 2, 3, 4] },
+    { "id": "evolution-transition", "template": "evolution", "condition": "healthy", "fromStages": [1, 2, 3], "toStages": [2, 3, 4] },
+    { "id": "stage-4-farewell", "template": "farewell", "stage": 4, "condition": "healthy" }
+  ]
+}

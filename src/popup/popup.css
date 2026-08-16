@@ -259,48 +259,34 @@ input:focus {
 .pair-progress { font-size: 16px; font-weight: 800; }
 .grovekin-art {
   position: relative;
-  width: 132px;
-  height: 116px;
+  width: 160px;
+  height: 160px;
   margin: 0 auto 12px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
-.grovekin-face {
+
+.grovekin-still,
+.grovekin-frame {
   position: absolute;
-  left: 26px;
-  top: 22px;
-  width: 80px;
-  height: 76px;
-  border: 4px solid #243027;
-  border-radius: 48% 52% 46% 54%;
-  background: #b7d38c;
-  box-shadow: inset -7px -5px 0 rgb(36 48 39 / 12%);
+  inset: 0;
+  width: 160px;
+  height: 160px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  object-fit: contain;
+  pointer-events: none;
 }
-.grovekin-eye {
-  position: absolute;
-  top: 27px;
-  width: 9px;
-  height: 12px;
-  border-radius: 50%;
-  background: #243027;
+.grovekin-frame { z-index: 1; }
+.grovekin-farewell-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: rgb(244 240 231 / 86%);
 }
-.grovekin-eye:first-child { left: 20px; }
-.grovekin-eye:last-child { right: 20px; }
-.grovekin-leaf {
-  position: absolute;
-  top: 6px;
-  width: 38px;
-  height: 54px;
-  border: 4px solid #2e5a3a;
-  border-radius: 80% 20% 80% 20%;
-  background: #79a76b;
-}
-.grovekin-leaf-left { left: 15px; transform: rotate(-27deg); }
-.grovekin-leaf-right { right: 15px; transform: scaleX(-1) rotate(-27deg); }
-.grovekin-stage-2 .grovekin-leaf { height: 62px; }
-.grovekin-stage-3 .grovekin-leaf { width: 44px; height: 68px; }
-.grovekin-stage-4 .grovekin-leaf { width: 48px; height: 74px; }
-.grovekin-hungry .grovekin-face { transform: translateX(4px) rotate(3deg); }
-.grovekin-sad .grovekin-face { transform: translateY(7px) rotate(-5deg); }
-.grovekin-deteriorated .grovekin-face { transform: translateY(12px) rotate(-8deg); filter: saturate(.55); }
 .visually-hidden {
   position: absolute !important;
   width: 1px !important;

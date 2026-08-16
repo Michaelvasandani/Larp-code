@@ -14,11 +14,14 @@ import {
   drawContactFrame,
   drawContactLabel,
   drawStill,
+  drawAnimationFrame,
 } from "./source.mjs";
 
 const SOURCE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OUTPUT_DIRECTORY = join(SOURCE_DIRECTORY, "generated");
 const GENERATOR_PATH = fileURLToPath(import.meta.url);
+const CLIP_REGISTRY_PATH = join(SOURCE_DIRECTORY, "clip-registry.json");
+const CLIP_REGISTRY = JSON.parse(readFileSync(CLIP_REGISTRY_PATH, "utf8"));
 
 function usage() {
   return "Usage: node art/grovekin/generate.mjs [--output-dir <directory>]";
@@ -110,6 +113,20 @@ function makeSpritesheet(stills) {
   return encodePng(192, 192, pixels);
 }
 
+function makeAnimationSpritesheet(frames) {
+  const columns = 5;
+  const rows = Math.ceil(frames.length / columns);
+  const width = columns * CANVAS_SIZE;
+  const height = rows * CANVAS_SIZE;
+  const pixels = new Uint8Array(width * height * 4);
+  frames.forEach((frame, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    blit(frame.pixels, pixels, width, column * CANVAS_SIZE, row * CANVAS_SIZE);
+  });
+  return { bytes: encodePng(width, height, pixels), width, height, columns, rows };
+}
+
 function makeContactSheet(stills) {
   const size = 216;
   const pixels = new Uint8Array(size * size * 4);
@@ -134,16 +151,28 @@ function makeContactSheet(stills) {
 
 function cleanOutputDirectory(outputDirectory) {
   mkdirSync(outputDirectory, { recursive: true });
-  ["stills", "spritesheet", "manifest.json", "checksums.sha256", "contact-sheet.png"].forEach((entry) => {
+  ["stills", "frames", "spritesheet", "manifest.json", "checksums.sha256", "animation-checksums.sha256", "contact-sheet.png"].forEach((entry) => {
     rmSync(join(outputDirectory, entry), { recursive: true, force: true });
   });
   mkdirSync(join(outputDirectory, "stills"), { recursive: true });
+  mkdirSync(join(outputDirectory, "frames"), { recursive: true });
   mkdirSync(join(outputDirectory, "spritesheet"), { recursive: true });
+}
+
+function clipVariants(clip) {
+  if (clip.stages) return clip.stages.map((stage) => ({ stage, fromStage: stage, toStage: stage }));
+  if (clip.fromStages) return clip.fromStages.map((fromStage, index) => ({
+    stage: clip.toStages[index],
+    fromStage,
+    toStage: clip.toStages[index],
+  }));
+  return [{ stage: clip.stage, fromStage: clip.stage, toStage: clip.stage }];
 }
 
 function writeGenerated(outputDirectory) {
   cleanOutputDirectory(outputDirectory);
   const sourceSha256 = sha256(readFileSync(join(SOURCE_DIRECTORY, "source.mjs")));
+  const registrySha256 = sha256(readFileSync(CLIP_REGISTRY_PATH));
   const generatorSha256 = sha256(readFileSync(GENERATOR_PATH));
   const generatorRevision = `grovekin-stills-v1+source-${sourceSha256}+generator-${generatorSha256}`;
   const stillPixels = [];
@@ -175,6 +204,70 @@ function writeGenerated(outputDirectory) {
   writeFileSync(join(outputDirectory, spritesheetFile), spritesheetBytes);
   writeFileSync(join(outputDirectory, contactSheetFile), contactSheetBytes);
 
+  const animationFrames = [];
+  const animationClips = CLIP_REGISTRY.clips.map((clip) => {
+    const template = CLIP_REGISTRY.templates[clip.template];
+    const variants = clipVariants(clip).map((variant) => {
+      const clipFrames = template.frames.map((descriptor, frameIndex) => {
+        const frameId = clip.stages || clip.fromStages
+          ? `${clip.id}-stage-${variant.stage}-${descriptor.id}`
+          : `${clip.id}-${descriptor.id}`;
+        const frameStageIndex = variant.fromStage - 1;
+        const targetStageIndex = variant.toStage - 1;
+        const pixels = drawAnimationFrame({
+          clipId: clip.id,
+          frameIndex,
+          stageIndex: frameStageIndex,
+          targetStageIndex,
+          conditionId: clip.condition,
+        });
+        const bytes = encodePng(CANVAS_SIZE, CANVAS_SIZE, pixels);
+        const file = `frames/${frameId}.png`;
+        writeFileSync(join(outputDirectory, file), bytes);
+        const frame = {
+          id: frameId,
+          file,
+          width: CANVAS_SIZE,
+          height: CANVAS_SIZE,
+          sha256: sha256(bytes),
+          stage: STAGES[variant.stage - 1].id,
+          fromStage: STAGES[variant.fromStage - 1].id,
+          toStage: STAGES[variant.toStage - 1].id,
+          condition: clip.condition,
+          semanticFlags: CONDITIONS.find((condition) => condition.id === clip.condition).semanticFlags,
+        };
+        animationFrames.push({ ...frame, pixels });
+        return { frameId, durationMs: descriptor.durationMs };
+      });
+      return {
+        stage: variant.stage,
+        fromStage: variant.fromStage,
+        toStage: variant.toStage,
+        frames: clipFrames,
+        totalDurationMs: clipFrames.reduce((total, frame) => total + frame.durationMs, 0),
+      };
+    });
+    const firstVariant = variants[0];
+    return {
+      id: clip.id,
+      kind: template.kind,
+      event: template.event,
+      loop: template.loop,
+      frames: firstVariant.frames,
+      totalDurationMs: firstVariant.totalDurationMs,
+      ...(variants.length > 1 ? { variants } : {}),
+    };
+  });
+  const animationSheet = makeAnimationSpritesheet(animationFrames);
+  const animationSpritesheetFile = "spritesheet/grovekin-animations.png";
+  writeFileSync(join(outputDirectory, animationSpritesheetFile), animationSheet.bytes);
+  const animationChecksumFiles = animationFrames.map((frame) => frame.file).concat(animationSpritesheetFile).sort();
+  const animationChecksumsFile = "animation-checksums.sha256";
+  writeFileSync(
+    join(outputDirectory, animationChecksumsFile),
+    `${animationChecksumFiles.map((file) => `${sha256(readFileSync(join(outputDirectory, file)))}  ${file}`).join("\n")}\n`,
+  );
+
   const manifest = {
     schemaVersion: 1,
     generator: {
@@ -183,6 +276,8 @@ function writeGenerated(outputDirectory) {
       source: "art/grovekin/generate.mjs",
       drawingSource: "art/grovekin/source.mjs",
       sourceSha256,
+      registry: "art/grovekin/clip-registry.json",
+      registrySha256,
       generatorSha256,
     },
     canvas: { width: CANVAS_SIZE, height: CANVAS_SIZE, alpha: "straight-rgba" },
@@ -207,6 +302,17 @@ function writeGenerated(outputDirectory) {
       layout: { rows: "Evolution Stage 1 through 4", columns: "Healthy, Hungry, Sad, Deteriorated" },
       sha256: sha256(contactSheetBytes),
     },
+    frames: animationFrames.map(({ pixels: _pixels, ...frame }) => frame),
+    clips: animationClips,
+    animationSpritesheet: {
+      file: animationSpritesheetFile,
+      width: animationSheet.width,
+      height: animationSheet.height,
+      layout: { columns: animationSheet.columns, rows: animationSheet.rows, order: "clip declaration order, frame order" },
+      sha256: sha256(animationSheet.bytes),
+    },
+    animationChecksums: animationChecksumsFile,
+    checksums: { stills: "checksums.sha256", animations: animationChecksumsFile },
   };
   const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   writeFileSync(join(outputDirectory, "manifest.json"), manifestBytes);

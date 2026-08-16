@@ -1,12 +1,14 @@
 {
   "schemaVersion": 1,
   "generator": {
-    "revision": "grovekin-stills-v1+source-2d38654e5acbd31b2be63afb5710d9fa5c57bc1148a099eebe0dd0b8e119f5df+generator-704c5d032951cafb9ad16ddccde859ad3529139a68b3feee849fbec190e992ed",
+    "revision": "grovekin-stills-v1+source-ce2d31749af5b225517ca9b196e1fa5725435497e0786dd833ff88cc8c610e33+generator-1226757e8372848e8c53c764322d093fccdbb04158630ae169c203e09b69cc16",
     "command": "node art/grovekin/generate.mjs --output-dir <output-dir>",
     "source": "art/grovekin/generate.mjs",
     "drawingSource": "art/grovekin/source.mjs",
-    "sourceSha256": "2d38654e5acbd31b2be63afb5710d9fa5c57bc1148a099eebe0dd0b8e119f5df",
-    "generatorSha256": "704c5d032951cafb9ad16ddccde859ad3529139a68b3feee849fbec190e992ed"
+    "sourceSha256": "ce2d31749af5b225517ca9b196e1fa5725435497e0786dd833ff88cc8c610e33",
+    "registry": "art/grovekin/clip-registry.json",
+    "registrySha256": "69b2c2ad7236361900f896d2fb744d19cc12f44ffc5cb6a05d0b6cd22f00cb1b",
+    "generatorSha256": "1226757e8372848e8c53c764322d093fccdbb04158630ae169c203e09b69cc16"
   },
   "canvas": {
     "width": 48,
@@ -389,5 +391,1461 @@
       "columns": "Healthy, Hungry, Sad, Deteriorated"
     },
     "sha256": "68fe07c230779e28e8449c24fa0db35cefd95f128c7652b7ede6cc8c5f81507f"
+  },
+  "frames": [
+    {
+      "id": "stage-1-idle-open",
+      "file": "frames/stage-1-idle-open.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "23ab1d88350c1b56ba8dd829129691f854a96dfc88a57bf304a6234f0c2574e6",
+      "stage": "stage-1",
+      "fromStage": "stage-1",
+      "toStage": "stage-1",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-1-idle-blink",
+      "file": "frames/stage-1-idle-blink.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "68c2acaf7bcd69330a65a70c82feccbc6663dc2d7fb63d49a14a3f1716fbd619",
+      "stage": "stage-1",
+      "fromStage": "stage-1",
+      "toStage": "stage-1",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-2-idle-open",
+      "file": "frames/stage-2-idle-open.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "895e6c0ad43b3d5a9e6c8b5b7ab6581a6b0d127c069d1bdc078cda944671727b",
+      "stage": "stage-2",
+      "fromStage": "stage-2",
+      "toStage": "stage-2",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-2-idle-blink",
+      "file": "frames/stage-2-idle-blink.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "140ecf40736fbf71eb23b0a3ead2c83a531e50c5f297981b1702b2b548d78d33",
+      "stage": "stage-2",
+      "fromStage": "stage-2",
+      "toStage": "stage-2",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-3-idle-open",
+      "file": "frames/stage-3-idle-open.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "eda3fc55d9fcb304fd7ddd6802e48dd023f0c39e5b8692009fd9115a9a27e0f1",
+      "stage": "stage-3",
+      "fromStage": "stage-3",
+      "toStage": "stage-3",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-3-idle-blink",
+      "file": "frames/stage-3-idle-blink.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "1ae573e1365f7a9e5133fcf885ca9220a91e71ae14c3776c828a7f13836dd1e1",
+      "stage": "stage-3",
+      "fromStage": "stage-3",
+      "toStage": "stage-3",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-4-idle-open",
+      "file": "frames/stage-4-idle-open.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "85a0bdb17e056d6c320bb9e1b85a150433eb246f3f3276a206b370034023aca1",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-4-idle-blink",
+      "file": "frames/stage-4-idle-blink.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "a5f68a6ee446bc0ea5a32136779945c1e1c691832b143cccb81dfa9a6d3a50ca",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "hungry-accent-stage-1-rest",
+      "file": "frames/hungry-accent-stage-1-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "ff33d2de1415ec49e07bce837ee28ea98f01d58315316fba37891d6d6afecdf3",
+      "stage": "stage-1",
+      "fromStage": "stage-1",
+      "toStage": "stage-1",
+      "condition": "hungry",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "hungry-accent-stage-1-accent",
+      "file": "frames/hungry-accent-stage-1-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "93e505dc6f8b9f4135785d06eb745f4dc1b3b8cfd57ae68a1299d1c9207264db",
+      "stage": "stage-1",
+      "fromStage": "stage-1",
+      "toStage": "stage-1",
+      "condition": "hungry",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "hungry-accent-stage-2-rest",
+      "file": "frames/hungry-accent-stage-2-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "5d44133a576b55bc07a83fb432003233bf76f29de1c2406642f86edd95b363fa",
+      "stage": "stage-2",
+      "fromStage": "stage-2",
+      "toStage": "stage-2",
+      "condition": "hungry",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "hungry-accent-stage-2-accent",
+      "file": "frames/hungry-accent-stage-2-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "58808a84a286bf8595e4a450d01cb684509b3d683d9e7c9f63b639b735e86ccf",
+      "stage": "stage-2",
+      "fromStage": "stage-2",
+      "toStage": "stage-2",
+      "condition": "hungry",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "hungry-accent-stage-3-rest",
+      "file": "frames/hungry-accent-stage-3-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "6df564886e84c77de58602ab7cfdeab8b811d5caa01ec0cb2aa9be71e56c7569",
+      "stage": "stage-3",
+      "fromStage": "stage-3",
+      "toStage": "stage-3",
+      "condition": "hungry",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "hungry-accent-stage-3-accent",
+      "file": "frames/hungry-accent-stage-3-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "40b048384a30d54c1f6bc59050ad1616e23b4b24fce503aed533e0e7df68454a",
+      "stage": "stage-3",
+      "fromStage": "stage-3",
+      "toStage": "stage-3",
+      "condition": "hungry",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "hungry-accent-stage-4-rest",
+      "file": "frames/hungry-accent-stage-4-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "1dfc9a3682ff2429cba454b84885c84e736d14ae2b0c7456152db9831d847f62",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "hungry",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "hungry-accent-stage-4-accent",
+      "file": "frames/hungry-accent-stage-4-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "c6413414000d0892796333f7410f75b24ef547f122dc427c51a0996d127f1b59",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "hungry",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "sad-accent-stage-1-rest",
+      "file": "frames/sad-accent-stage-1-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "550ea86160791f392c86840fc876fbda9c398c5d69913faef932ac5c06f65b1d",
+      "stage": "stage-1",
+      "fromStage": "stage-1",
+      "toStage": "stage-1",
+      "condition": "sad",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "sad-accent-stage-1-accent",
+      "file": "frames/sad-accent-stage-1-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "6f66cdfd7cfd92947de29fb9b292c063a4ea5f2d02eacc72e7ee7d2dc4ab1654",
+      "stage": "stage-1",
+      "fromStage": "stage-1",
+      "toStage": "stage-1",
+      "condition": "sad",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "sad-accent-stage-2-rest",
+      "file": "frames/sad-accent-stage-2-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "4741c09a7e640bc80a7633be70b3a10a732afcec5a294e60e9c1f3b320cb5b25",
+      "stage": "stage-2",
+      "fromStage": "stage-2",
+      "toStage": "stage-2",
+      "condition": "sad",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "sad-accent-stage-2-accent",
+      "file": "frames/sad-accent-stage-2-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "eb5c468a1b3fe2adc0eedcff46881f820f2b848aa08589e8c0c0ec3003d1cfbb",
+      "stage": "stage-2",
+      "fromStage": "stage-2",
+      "toStage": "stage-2",
+      "condition": "sad",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "sad-accent-stage-3-rest",
+      "file": "frames/sad-accent-stage-3-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "629f07f5525c48f1939d9be07d73b8d5aef0038f620e53f2060cdd32486a3b6e",
+      "stage": "stage-3",
+      "fromStage": "stage-3",
+      "toStage": "stage-3",
+      "condition": "sad",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "sad-accent-stage-3-accent",
+      "file": "frames/sad-accent-stage-3-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "b110357fbf9534916d6adb8cf3adc6558f464db4fb7b1a68714e8ef1ebfc5afe",
+      "stage": "stage-3",
+      "fromStage": "stage-3",
+      "toStage": "stage-3",
+      "condition": "sad",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "sad-accent-stage-4-rest",
+      "file": "frames/sad-accent-stage-4-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "17111aa966ae16578672a9b550b7eab0cc08422c240c29577697fdd47ca322b2",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "sad",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "sad-accent-stage-4-accent",
+      "file": "frames/sad-accent-stage-4-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "ad4e0209fe9b66069eadddc71c05f211651b79c2de60e98cf6eaf7c4e4448a16",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "sad",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "deteriorated-accent-stage-1-rest",
+      "file": "frames/deteriorated-accent-stage-1-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "e4298988c3dc73234d1695d3bd2606a0573e162e7b860934b212a63a5259f10d",
+      "stage": "stage-1",
+      "fromStage": "stage-1",
+      "toStage": "stage-1",
+      "condition": "deteriorated",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    },
+    {
+      "id": "deteriorated-accent-stage-1-accent",
+      "file": "frames/deteriorated-accent-stage-1-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "4af7b820813f9fcb12ae23ade6fe242b278360f6707deab43b9df6453ac2f59c",
+      "stage": "stage-1",
+      "fromStage": "stage-1",
+      "toStage": "stage-1",
+      "condition": "deteriorated",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    },
+    {
+      "id": "deteriorated-accent-stage-2-rest",
+      "file": "frames/deteriorated-accent-stage-2-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "c68dc15b17282c37564ea07f353344824162f281386014016b16d631ea9fa299",
+      "stage": "stage-2",
+      "fromStage": "stage-2",
+      "toStage": "stage-2",
+      "condition": "deteriorated",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    },
+    {
+      "id": "deteriorated-accent-stage-2-accent",
+      "file": "frames/deteriorated-accent-stage-2-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "892661b5297a174fede92afdfa69c3fdfc9a9854d89efcc75afdc224d186f4f0",
+      "stage": "stage-2",
+      "fromStage": "stage-2",
+      "toStage": "stage-2",
+      "condition": "deteriorated",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    },
+    {
+      "id": "deteriorated-accent-stage-3-rest",
+      "file": "frames/deteriorated-accent-stage-3-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "68791e1f811825c54063fd87cd5205940a686b7b2fd8afc7e0e08e1ac7f0228a",
+      "stage": "stage-3",
+      "fromStage": "stage-3",
+      "toStage": "stage-3",
+      "condition": "deteriorated",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    },
+    {
+      "id": "deteriorated-accent-stage-3-accent",
+      "file": "frames/deteriorated-accent-stage-3-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "6fab6304d7c7aed60f32efaa76b4f7feb1488527bd798ca36776bbef0164d58c",
+      "stage": "stage-3",
+      "fromStage": "stage-3",
+      "toStage": "stage-3",
+      "condition": "deteriorated",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    },
+    {
+      "id": "deteriorated-accent-stage-4-rest",
+      "file": "frames/deteriorated-accent-stage-4-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "2e286e3639c25fabaabf9f6becbf7e330a416fddca8fbe96e56301da1910232c",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "deteriorated",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    },
+    {
+      "id": "deteriorated-accent-stage-4-accent",
+      "file": "frames/deteriorated-accent-stage-4-accent.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "0967c8e4593cb67080c460e93773ede5f4590a152c59a1b53b27a252a39d595e",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "deteriorated",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-1-rest",
+      "file": "frames/solve-reaction-stage-1-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "23ab1d88350c1b56ba8dd829129691f854a96dfc88a57bf304a6234f0c2574e6",
+      "stage": "stage-1",
+      "fromStage": "stage-1",
+      "toStage": "stage-1",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-1-celebrate",
+      "file": "frames/solve-reaction-stage-1-celebrate.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "045e9650a7152b3a423a548e4c5dfa14b3eaedf129a19772e8cbe446a9292683",
+      "stage": "stage-1",
+      "fromStage": "stage-1",
+      "toStage": "stage-1",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-1-rest-final",
+      "file": "frames/solve-reaction-stage-1-rest-final.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "23ab1d88350c1b56ba8dd829129691f854a96dfc88a57bf304a6234f0c2574e6",
+      "stage": "stage-1",
+      "fromStage": "stage-1",
+      "toStage": "stage-1",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-2-rest",
+      "file": "frames/solve-reaction-stage-2-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "895e6c0ad43b3d5a9e6c8b5b7ab6581a6b0d127c069d1bdc078cda944671727b",
+      "stage": "stage-2",
+      "fromStage": "stage-2",
+      "toStage": "stage-2",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-2-celebrate",
+      "file": "frames/solve-reaction-stage-2-celebrate.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "b09e39eaaabb9524907a68ac2be152652c15e9f18ab2f3a13e3682ac830eabbd",
+      "stage": "stage-2",
+      "fromStage": "stage-2",
+      "toStage": "stage-2",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-2-rest-final",
+      "file": "frames/solve-reaction-stage-2-rest-final.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "895e6c0ad43b3d5a9e6c8b5b7ab6581a6b0d127c069d1bdc078cda944671727b",
+      "stage": "stage-2",
+      "fromStage": "stage-2",
+      "toStage": "stage-2",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-3-rest",
+      "file": "frames/solve-reaction-stage-3-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "eda3fc55d9fcb304fd7ddd6802e48dd023f0c39e5b8692009fd9115a9a27e0f1",
+      "stage": "stage-3",
+      "fromStage": "stage-3",
+      "toStage": "stage-3",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-3-celebrate",
+      "file": "frames/solve-reaction-stage-3-celebrate.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "598f3299f9138be1a1869bf3664185608c7bdfbdb6b43c4ef2809e4cfd55e645",
+      "stage": "stage-3",
+      "fromStage": "stage-3",
+      "toStage": "stage-3",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-3-rest-final",
+      "file": "frames/solve-reaction-stage-3-rest-final.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "eda3fc55d9fcb304fd7ddd6802e48dd023f0c39e5b8692009fd9115a9a27e0f1",
+      "stage": "stage-3",
+      "fromStage": "stage-3",
+      "toStage": "stage-3",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-4-rest",
+      "file": "frames/solve-reaction-stage-4-rest.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "85a0bdb17e056d6c320bb9e1b85a150433eb246f3f3276a206b370034023aca1",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-4-celebrate",
+      "file": "frames/solve-reaction-stage-4-celebrate.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "34868dd4c5e924a3f4dd6cd0600b5b99e1c276d5f4d8a3894722a4389aeed037",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "solve-reaction-stage-4-rest-final",
+      "file": "frames/solve-reaction-stage-4-rest-final.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "85a0bdb17e056d6c320bb9e1b85a150433eb246f3f3276a206b370034023aca1",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "evolution-transition-stage-2-before",
+      "file": "frames/evolution-transition-stage-2-before.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "23ab1d88350c1b56ba8dd829129691f854a96dfc88a57bf304a6234f0c2574e6",
+      "stage": "stage-2",
+      "fromStage": "stage-1",
+      "toStage": "stage-2",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "evolution-transition-stage-2-grow",
+      "file": "frames/evolution-transition-stage-2-grow.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "1d95d360976a6eae0dfabc025a9ea1349bb67f8455f7525cfe469d7e184ba7a7",
+      "stage": "stage-2",
+      "fromStage": "stage-1",
+      "toStage": "stage-2",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "evolution-transition-stage-2-after",
+      "file": "frames/evolution-transition-stage-2-after.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "895e6c0ad43b3d5a9e6c8b5b7ab6581a6b0d127c069d1bdc078cda944671727b",
+      "stage": "stage-2",
+      "fromStage": "stage-1",
+      "toStage": "stage-2",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "evolution-transition-stage-3-before",
+      "file": "frames/evolution-transition-stage-3-before.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "895e6c0ad43b3d5a9e6c8b5b7ab6581a6b0d127c069d1bdc078cda944671727b",
+      "stage": "stage-3",
+      "fromStage": "stage-2",
+      "toStage": "stage-3",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "evolution-transition-stage-3-grow",
+      "file": "frames/evolution-transition-stage-3-grow.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "1130217d696dafdff40c2034bc2c3e8cbb17603d655a43e80be81fbe7fc4ddb6",
+      "stage": "stage-3",
+      "fromStage": "stage-2",
+      "toStage": "stage-3",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "evolution-transition-stage-3-after",
+      "file": "frames/evolution-transition-stage-3-after.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "eda3fc55d9fcb304fd7ddd6802e48dd023f0c39e5b8692009fd9115a9a27e0f1",
+      "stage": "stage-3",
+      "fromStage": "stage-2",
+      "toStage": "stage-3",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "evolution-transition-stage-4-before",
+      "file": "frames/evolution-transition-stage-4-before.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "eda3fc55d9fcb304fd7ddd6802e48dd023f0c39e5b8692009fd9115a9a27e0f1",
+      "stage": "stage-4",
+      "fromStage": "stage-3",
+      "toStage": "stage-4",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "evolution-transition-stage-4-grow",
+      "file": "frames/evolution-transition-stage-4-grow.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "a8974ca54f4c471daad24d61d27c86227ed5f59f616cac03dc1b94b6fbc9c5b6",
+      "stage": "stage-4",
+      "fromStage": "stage-3",
+      "toStage": "stage-4",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "evolution-transition-stage-4-after",
+      "file": "frames/evolution-transition-stage-4-after.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "85a0bdb17e056d6c320bb9e1b85a150433eb246f3f3276a206b370034023aca1",
+      "stage": "stage-4",
+      "fromStage": "stage-3",
+      "toStage": "stage-4",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-4-farewell-present",
+      "file": "frames/stage-4-farewell-present.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "85a0bdb17e056d6c320bb9e1b85a150433eb246f3f3276a206b370034023aca1",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-4-farewell-bow",
+      "file": "frames/stage-4-farewell-bow.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "5b6c6597b5df35509468c7e838718f0385f886b3516c172e6fc601e5b2d02cd1",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-4-farewell-fade",
+      "file": "frames/stage-4-farewell-fade.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "68eb0c3e5f4f666b43e15beeda47cc52edd44f70eec1c2af947d5a62e40ae9ea",
+      "stage": "stage-4",
+      "fromStage": "stage-4",
+      "toStage": "stage-4",
+      "condition": "healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    }
+  ],
+  "clips": [
+    {
+      "id": "stage-1-idle",
+      "kind": "idle",
+      "event": null,
+      "loop": true,
+      "frames": [
+        {
+          "frameId": "stage-1-idle-open",
+          "durationMs": 700
+        },
+        {
+          "frameId": "stage-1-idle-blink",
+          "durationMs": 140
+        }
+      ],
+      "totalDurationMs": 840
+    },
+    {
+      "id": "stage-2-idle",
+      "kind": "idle",
+      "event": null,
+      "loop": true,
+      "frames": [
+        {
+          "frameId": "stage-2-idle-open",
+          "durationMs": 700
+        },
+        {
+          "frameId": "stage-2-idle-blink",
+          "durationMs": 140
+        }
+      ],
+      "totalDurationMs": 840
+    },
+    {
+      "id": "stage-3-idle",
+      "kind": "idle",
+      "event": null,
+      "loop": true,
+      "frames": [
+        {
+          "frameId": "stage-3-idle-open",
+          "durationMs": 700
+        },
+        {
+          "frameId": "stage-3-idle-blink",
+          "durationMs": 140
+        }
+      ],
+      "totalDurationMs": 840
+    },
+    {
+      "id": "stage-4-idle",
+      "kind": "idle",
+      "event": null,
+      "loop": true,
+      "frames": [
+        {
+          "frameId": "stage-4-idle-open",
+          "durationMs": 700
+        },
+        {
+          "frameId": "stage-4-idle-blink",
+          "durationMs": 140
+        }
+      ],
+      "totalDurationMs": 840
+    },
+    {
+      "id": "hungry-accent",
+      "kind": "condition-accent",
+      "event": "condition",
+      "loop": false,
+      "frames": [
+        {
+          "frameId": "hungry-accent-stage-1-rest",
+          "durationMs": 220
+        },
+        {
+          "frameId": "hungry-accent-stage-1-accent",
+          "durationMs": 280
+        }
+      ],
+      "totalDurationMs": 500,
+      "variants": [
+        {
+          "stage": 1,
+          "fromStage": 1,
+          "toStage": 1,
+          "frames": [
+            {
+              "frameId": "hungry-accent-stage-1-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "hungry-accent-stage-1-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        },
+        {
+          "stage": 2,
+          "fromStage": 2,
+          "toStage": 2,
+          "frames": [
+            {
+              "frameId": "hungry-accent-stage-2-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "hungry-accent-stage-2-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        },
+        {
+          "stage": 3,
+          "fromStage": 3,
+          "toStage": 3,
+          "frames": [
+            {
+              "frameId": "hungry-accent-stage-3-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "hungry-accent-stage-3-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        },
+        {
+          "stage": 4,
+          "fromStage": 4,
+          "toStage": 4,
+          "frames": [
+            {
+              "frameId": "hungry-accent-stage-4-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "hungry-accent-stage-4-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        }
+      ]
+    },
+    {
+      "id": "sad-accent",
+      "kind": "condition-accent",
+      "event": "condition",
+      "loop": false,
+      "frames": [
+        {
+          "frameId": "sad-accent-stage-1-rest",
+          "durationMs": 220
+        },
+        {
+          "frameId": "sad-accent-stage-1-accent",
+          "durationMs": 280
+        }
+      ],
+      "totalDurationMs": 500,
+      "variants": [
+        {
+          "stage": 1,
+          "fromStage": 1,
+          "toStage": 1,
+          "frames": [
+            {
+              "frameId": "sad-accent-stage-1-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "sad-accent-stage-1-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        },
+        {
+          "stage": 2,
+          "fromStage": 2,
+          "toStage": 2,
+          "frames": [
+            {
+              "frameId": "sad-accent-stage-2-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "sad-accent-stage-2-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        },
+        {
+          "stage": 3,
+          "fromStage": 3,
+          "toStage": 3,
+          "frames": [
+            {
+              "frameId": "sad-accent-stage-3-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "sad-accent-stage-3-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        },
+        {
+          "stage": 4,
+          "fromStage": 4,
+          "toStage": 4,
+          "frames": [
+            {
+              "frameId": "sad-accent-stage-4-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "sad-accent-stage-4-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        }
+      ]
+    },
+    {
+      "id": "deteriorated-accent",
+      "kind": "condition-accent",
+      "event": "condition",
+      "loop": false,
+      "frames": [
+        {
+          "frameId": "deteriorated-accent-stage-1-rest",
+          "durationMs": 220
+        },
+        {
+          "frameId": "deteriorated-accent-stage-1-accent",
+          "durationMs": 280
+        }
+      ],
+      "totalDurationMs": 500,
+      "variants": [
+        {
+          "stage": 1,
+          "fromStage": 1,
+          "toStage": 1,
+          "frames": [
+            {
+              "frameId": "deteriorated-accent-stage-1-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "deteriorated-accent-stage-1-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        },
+        {
+          "stage": 2,
+          "fromStage": 2,
+          "toStage": 2,
+          "frames": [
+            {
+              "frameId": "deteriorated-accent-stage-2-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "deteriorated-accent-stage-2-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        },
+        {
+          "stage": 3,
+          "fromStage": 3,
+          "toStage": 3,
+          "frames": [
+            {
+              "frameId": "deteriorated-accent-stage-3-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "deteriorated-accent-stage-3-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        },
+        {
+          "stage": 4,
+          "fromStage": 4,
+          "toStage": 4,
+          "frames": [
+            {
+              "frameId": "deteriorated-accent-stage-4-rest",
+              "durationMs": 220
+            },
+            {
+              "frameId": "deteriorated-accent-stage-4-accent",
+              "durationMs": 280
+            }
+          ],
+          "totalDurationMs": 500
+        }
+      ]
+    },
+    {
+      "id": "solve-reaction",
+      "kind": "solve-reaction",
+      "event": "authoritative-solve",
+      "loop": false,
+      "frames": [
+        {
+          "frameId": "solve-reaction-stage-1-rest",
+          "durationMs": 160
+        },
+        {
+          "frameId": "solve-reaction-stage-1-celebrate",
+          "durationMs": 260
+        },
+        {
+          "frameId": "solve-reaction-stage-1-rest-final",
+          "durationMs": 180
+        }
+      ],
+      "totalDurationMs": 600,
+      "variants": [
+        {
+          "stage": 1,
+          "fromStage": 1,
+          "toStage": 1,
+          "frames": [
+            {
+              "frameId": "solve-reaction-stage-1-rest",
+              "durationMs": 160
+            },
+            {
+              "frameId": "solve-reaction-stage-1-celebrate",
+              "durationMs": 260
+            },
+            {
+              "frameId": "solve-reaction-stage-1-rest-final",
+              "durationMs": 180
+            }
+          ],
+          "totalDurationMs": 600
+        },
+        {
+          "stage": 2,
+          "fromStage": 2,
+          "toStage": 2,
+          "frames": [
+            {
+              "frameId": "solve-reaction-stage-2-rest",
+              "durationMs": 160
+            },
+            {
+              "frameId": "solve-reaction-stage-2-celebrate",
+              "durationMs": 260
+            },
+            {
+              "frameId": "solve-reaction-stage-2-rest-final",
+              "durationMs": 180
+            }
+          ],
+          "totalDurationMs": 600
+        },
+        {
+          "stage": 3,
+          "fromStage": 3,
+          "toStage": 3,
+          "frames": [
+            {
+              "frameId": "solve-reaction-stage-3-rest",
+              "durationMs": 160
+            },
+            {
+              "frameId": "solve-reaction-stage-3-celebrate",
+              "durationMs": 260
+            },
+            {
+              "frameId": "solve-reaction-stage-3-rest-final",
+              "durationMs": 180
+            }
+          ],
+          "totalDurationMs": 600
+        },
+        {
+          "stage": 4,
+          "fromStage": 4,
+          "toStage": 4,
+          "frames": [
+            {
+              "frameId": "solve-reaction-stage-4-rest",
+              "durationMs": 160
+            },
+            {
+              "frameId": "solve-reaction-stage-4-celebrate",
+              "durationMs": 260
+            },
+            {
+              "frameId": "solve-reaction-stage-4-rest-final",
+              "durationMs": 180
+            }
+          ],
+          "totalDurationMs": 600
+        }
+      ]
+    },
+    {
+      "id": "evolution-transition",
+      "kind": "evolution-transition",
+      "event": "authoritative-evolution",
+      "loop": false,
+      "frames": [
+        {
+          "frameId": "evolution-transition-stage-2-before",
+          "durationMs": 180
+        },
+        {
+          "frameId": "evolution-transition-stage-2-grow",
+          "durationMs": 320
+        },
+        {
+          "frameId": "evolution-transition-stage-2-after",
+          "durationMs": 240
+        }
+      ],
+      "totalDurationMs": 740,
+      "variants": [
+        {
+          "stage": 2,
+          "fromStage": 1,
+          "toStage": 2,
+          "frames": [
+            {
+              "frameId": "evolution-transition-stage-2-before",
+              "durationMs": 180
+            },
+            {
+              "frameId": "evolution-transition-stage-2-grow",
+              "durationMs": 320
+            },
+            {
+              "frameId": "evolution-transition-stage-2-after",
+              "durationMs": 240
+            }
+          ],
+          "totalDurationMs": 740
+        },
+        {
+          "stage": 3,
+          "fromStage": 2,
+          "toStage": 3,
+          "frames": [
+            {
+              "frameId": "evolution-transition-stage-3-before",
+              "durationMs": 180
+            },
+            {
+              "frameId": "evolution-transition-stage-3-grow",
+              "durationMs": 320
+            },
+            {
+              "frameId": "evolution-transition-stage-3-after",
+              "durationMs": 240
+            }
+          ],
+          "totalDurationMs": 740
+        },
+        {
+          "stage": 4,
+          "fromStage": 3,
+          "toStage": 4,
+          "frames": [
+            {
+              "frameId": "evolution-transition-stage-4-before",
+              "durationMs": 180
+            },
+            {
+              "frameId": "evolution-transition-stage-4-grow",
+              "durationMs": 320
+            },
+            {
+              "frameId": "evolution-transition-stage-4-after",
+              "durationMs": 240
+            }
+          ],
+          "totalDurationMs": 740
+        }
+      ]
+    },
+    {
+      "id": "stage-4-farewell",
+      "kind": "farewell",
+      "event": "authoritative-farewell",
+      "loop": false,
+      "frames": [
+        {
+          "frameId": "stage-4-farewell-present",
+          "durationMs": 220
+        },
+        {
+          "frameId": "stage-4-farewell-bow",
+          "durationMs": 340
+        },
+        {
+          "frameId": "stage-4-farewell-fade",
+          "durationMs": 300
+        }
+      ],
+      "totalDurationMs": 860
+    }
+  ],
+  "animationSpritesheet": {
+    "file": "spritesheet/grovekin-animations.png",
+    "width": 240,
+    "height": 576,
+    "layout": {
+      "columns": 5,
+      "rows": 12,
+      "order": "clip declaration order, frame order"
+    },
+    "sha256": "523b4e0114a7d0536714e08d0d29b7084dce3fc329a4dbe572c49b261f9fa60e"
+  },
+  "animationChecksums": "animation-checksums.sha256",
+  "checksums": {
+    "stills": "checksums.sha256",
+    "animations": "animation-checksums.sha256"
   }
 }

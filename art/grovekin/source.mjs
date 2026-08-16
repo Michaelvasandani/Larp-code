@@ -239,6 +239,82 @@ export function drawStill(pose) {
   return canvas;
 }
 
+function clearPixel(canvas, x, y) {
+  if (x < 0 || y < 0 || x >= CANVAS_SIZE || y >= CANVAS_SIZE) return;
+  const index = (y * CANVAS_SIZE + x) * 4;
+  canvas[index] = 0;
+  canvas[index + 1] = 0;
+  canvas[index + 2] = 0;
+  canvas[index + 3] = 0;
+}
+
+function animationPixel(canvas, x, y, colorName) {
+  writePixel(canvas, CANVAS_SIZE, x, y, colorName);
+}
+
+/** Draw one deterministic animation frame from the canonical source. */
+export function drawAnimationFrame({ clipId, frameIndex, stageIndex = 0, targetStageIndex = stageIndex, conditionId = "healthy" }) {
+  const canvas = drawStill({ stageIndex, conditionId });
+
+  if (clipId.endsWith("-idle") && frameIndex === 1) {
+    const eyeY = 29;
+    for (const x of [16, 17, 18, 19, 28, 29, 30, 31]) {
+      clearPixel(canvas, x, eyeY);
+      clearPixel(canvas, x, eyeY + 1);
+      clearPixel(canvas, x, eyeY + 2);
+      clearPixel(canvas, x, eyeY + 3);
+    }
+    animationPixel(canvas, 16, eyeY + 2, "ink");
+    animationPixel(canvas, 28, eyeY + 2, "ink");
+  }
+
+  if (clipId === "hungry-accent" && frameIndex === 1) {
+    animationPixel(canvas, 39, 39, "food");
+    animationPixel(canvas, 40, 38, "food");
+    animationPixel(canvas, 41, 39, "food");
+  }
+  if (clipId === "sad-accent" && frameIndex === 1) {
+    animationPixel(canvas, 32, 38, "tear");
+    animationPixel(canvas, 32, 39, "tear");
+    animationPixel(canvas, 32, 40, "tear");
+  }
+  if (clipId === "deteriorated-accent" && frameIndex === 1) {
+    animationPixel(canvas, 14, 41, "leafMuted");
+    animationPixel(canvas, 15, 42, "leafMuted");
+    animationPixel(canvas, 16, 41, "outline");
+  }
+
+  if (clipId === "solve-reaction" && frameIndex === 1) {
+    animationPixel(canvas, 12, 20, "flowerLight");
+    animationPixel(canvas, 35, 20, "flowerLight");
+    animationPixel(canvas, 10, 24, "food");
+    animationPixel(canvas, 37, 24, "food");
+  }
+
+  if (clipId === "evolution-transition") {
+    if (frameIndex === 1) {
+      animationPixel(canvas, 20, 8, "leafBright");
+      animationPixel(canvas, 27, 8, "leaf");
+      animationPixel(canvas, 19, 9, "leafBright");
+      animationPixel(canvas, 28, 9, "leaf");
+    }
+    if (frameIndex === 2) return drawStill({ stageIndex: targetStageIndex, conditionId: "healthy" });
+  }
+
+  if (clipId === "stage-4-farewell") {
+    if (frameIndex === 1) {
+      for (let x = 13; x < 35; x += 1) animationPixel(canvas, x, 39, "bodyShadow");
+    }
+    if (frameIndex === 2) {
+      for (let y = 22; y < 42; y += 1) {
+        for (let x = 10; x < 39; x += 1) clearPixel(canvas, x, y);
+      }
+    }
+  }
+
+  return canvas;
+}
+
 export function drawContactLabel(canvas, x, y, glyph, colorName) {
   const glyphs = {
     "1": ["111", "010", "110", "010", "111"],
