@@ -90,6 +90,8 @@ describe("versioned popup/worker protocol", () => {
     expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "sign_out" })).toBe(true);
     expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "request_update" })).toBe(true);
     expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "erase_local_data" })).toBe(true);
+    expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "request_deletion_otp", email: "member@example.test" })).toBe(true);
+    expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "delete_member_account", confirmation: "DELETE MY ACCOUNT", otp: "123456" })).toBe(true);
     expect(isPopupRequest({
       version: PROTOCOL_VERSION,
       type: "create_member_account",
@@ -114,6 +116,11 @@ describe("versioned popup/worker protocol", () => {
       version: PROTOCOL_VERSION,
       type: "accept_invitation",
       invitationId: "invitation-1",
+    })).toBe(true);
+    expect(isPopupResponse({
+      ok: true,
+      auth: { status: "ready" },
+      command: { status: "applied", kind: "delete_member_account", idempotencyKey: "delete-1" },
     })).toBe(true);
   });
 

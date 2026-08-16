@@ -61,6 +61,12 @@ import {
 } from "./solve";
 import { createDebouncedSnapshotInvalidation } from "./realtime";
 import { requiresClientUpdate } from "../shared/compatibility";
+import {
+  createAccountDeletionAdapter,
+  parseDeletionReceipt,
+  type AccountDeletionAuth,
+  type AccountDeletionRpc,
+} from "./account-deletion";
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
@@ -293,6 +299,31 @@ const solveCorrectionRpc: SolveCorrectionRpc = {
     return parseSolveCorrection(data);
   },
 };
+const accountDeletionAuth: AccountDeletionAuth = {
+  async requestDeletionOtp(email) {
+    const { error } = await client.auth.signInWithOtp({ email, options: { shouldCreateUser: false } });
+    return { error };
+  },
+  async verifyDeletionOtp(input) {
+    return client.auth.verifyOtp({ email: input.email, token: input.token, type: "email" }) as unknown as Awaited<ReturnType<AccountDeletionAuth["verifyDeletionOtp"]>>;
+  },
+  async signOut(options) {
+    return client.auth.signOut(options);
+  },
+};
+const accountDeletionRpc: AccountDeletionRpc = {
+  async deleteMemberAccount(input) {
+    const { data, error } = await client.rpc("delete_member_account_v1", {
+      p_idempotency_key: input.idempotencyKey,
+      p_command_version: input.commandVersion,
+      p_command_kind: input.commandKind,
+      p_member_id: input.memberId,
+      p_member_email: input.memberEmail,
+    });
+    if (error) throw error;
+    return parseDeletionReceipt(data);
+  },
+};
 const displayNameCommands = createDisplayNameCommandAdapter({
   rpc: displayNameCommandRpc,
   storage: memberStorage,
@@ -332,6 +363,11 @@ const solveCommands = createSolveCommandAdapter({
 });
 const solveCorrectionCommands = createSolveCorrectionCommandAdapter({
   rpc: solveCorrectionRpc,
+  storage: memberStorage,
+});
+const accountDeletionCommands = createAccountDeletionAdapter({
+  auth: accountDeletionAuth,
+  rpc: accountDeletionRpc,
   storage: memberStorage,
 });
 const bootId = crypto.randomUUID();
@@ -496,6 +532,7 @@ async function withAuthenticatedMember<T>(operation: (member: AuthenticatedMembe
 }
 
 type CommandResult =
+  | { kind: "delete_member_account"; result: Awaited<ReturnType<typeof accountDeletionCommands.deleteAccount>> }
   | { kind: "update_display_name"; result: Awaited<ReturnType<typeof displayNameCommands.updateDisplayName>> }
   | { kind: "create_invitation"; result: Awaited<ReturnType<typeof invitationCommands.createInvitation>> }
   | { kind: "accept_invitation"; result: Awaited<ReturnType<typeof acceptanceCommands.acceptInvitation>> }
@@ -639,7 +676,9 @@ async function getAppSnapshot(
   };
   if (reconcilePending) {
     const commandIdentity = { memberId: identity.memberId, memberEmail: identity.email };
+    let deletionResolved = false;
     const recoveries: Array<[CommandResult["kind"], Promise<unknown>]> = [
+      ["delete_member_account", accountDeletionCommands.recover(commandIdentity)],
       ["update_display_name", displayNameCommands.recover(commandIdentity)],
       ["create_invitation", invitationCommands.recover(commandIdentity)],
       ["accept_invitation", acceptanceCommands.recover(commandIdentity)],
@@ -650,8 +689,19 @@ async function getAppSnapshot(
     ];
     for (const [kind, recovery] of recoveries) {
       const outcome = commandOutcomeFromRecovery(kind, await recovery);
+      if (kind === "delete_member_account"
+        && (outcome?.status === "applied"
+          || (outcome?.status === "rejected" && outcome.code === "unauthorized"))) {
+        // A pending deletion was already fresh-email-confirmed. An applied
+        // result or an authoritative missing-account response means the
+        // server-side transaction resolved; erase the stale local session and
+        // pending envelope before exposing any setup state.
+        deletionResolved = true;
+        await authSessionAdapter.signOut();
+      }
       if (outcome) onRecoveredCommand?.(outcome);
     }
+    if (deletionResolved) return { ...snapshotMetadata(health, worker, null), kind: "signed_out" };
   }
   const account = await memberAccount.getMemberAccount();
   if (!account) {
@@ -660,6 +710,7 @@ async function getAppSnapshot(
     return { ...snapshotMetadata(health, worker, null), kind: "setup_required", email };
   }
   const pendingCommand = await displayNameCommands.readPending()
+    ?? await accountDeletionCommands.readPending()
     ?? await invitationCommands.readPending()
     ?? await acceptanceCommands.readPending()
     ?? await invitationTerminalCommands.readPending()
@@ -787,6 +838,31 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
           await memberAccount.createMemberAccount(request);
         });
         return { ok: true, snapshot: await getAppSnapshot() };
+      }
+      case "request_deletion_otp": {
+        const result = await withAuthenticatedMember(async ({ identity }) => accountDeletionCommands.requestDeletionOtp(identity.memberEmail));
+        return responseWithAuth({
+          status: result.status === "code_sent"
+            ? "code_sent"
+            : result.status === "rate_limited"
+              ? "rate_limited"
+              : result.status === "service_unavailable"
+                ? "service_unavailable"
+                : "ready",
+        });
+      }
+      case "delete_member_account": {
+        return withAuthenticatedMember(async ({ identity }) => {
+          const result = await accountDeletionCommands.deleteAccount(request, identity);
+          if (result.status === "applied") {
+            return {
+              ok: true,
+              auth: { status: "ready" },
+              command: { status: "applied", kind: result.kind, idempotencyKey: result.idempotencyKey },
+            };
+          }
+          return { ok: true, command: result };
+        });
       }
       case "update_display_name": {
         return withAuthenticatedMember(async ({ identity }) => {

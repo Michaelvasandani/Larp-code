@@ -99,6 +99,22 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     });
   }
 
+  async function freshEmailConfirmation(member: Profile): Promise<void> {
+    const link = await admin.auth.admin.generateLink({ type: "magiclink", email: member.email });
+    expect(link.error).toBeNull();
+    expect(link.data.properties).not.toBeNull();
+    const verified = await member.client.auth.verifyOtp({ token_hash: link.data.properties!.hashed_token, type: "magiclink" });
+    expect(verified.error).toBeNull();
+  }
+
+  async function deleteMember(member: Profile) {
+    await freshEmailConfirmation(member);
+    return member.client.rpc("delete_member_account_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "delete_member_account",
+      p_member_id: member.id, p_member_email: member.email,
+    });
+  }
+
   it("covers two-profile conflicts, boundary rejection, rollback, replay, cleanup, and equal authority", async () => {
     admin = createClient(credentials!.url, credentials!.serviceKey);
     const inviterC = await profile("C");
@@ -724,6 +740,164 @@ const acceptanceDb = describe.skipIf(!credentials)("acceptance invariants agains
     expect((await admin.from("solves").select("id").eq("challenge_id", restarted.data.id)).data).toHaveLength(0);
     expect((await admin.from("challenges").select("status, completion_farewell_at").eq("id", completedId).single()).data).toMatchObject({ status: "incomplete", completion_farewell_at: farewellAt });
     expect((await admin.from("challenges").select("highest_evolution_stage").eq("id", restarted.data.id).single()).data?.highest_evolution_stage).toBe(1);
+  });
+
+  it("deletes one Member atomically, preserves a bounded Deleted Member view, and isolates re-registration", async () => {
+    admin = createClient(credentials!.url, credentials!.serviceKey);
+    const deleting = await profile("DeleteMe");
+    const partner = await profile("DeletePartner");
+    expect((await admin.from("member_preferences").insert({ member_id: deleting.id, preferences: { theme: "private" } })).error).toBeNull();
+    const invitation = await admin.from("invitations").insert({
+      inviter_id: deleting.id, invited_email: partner.email, challenge_time_zone: "UTC",
+      start_date: "2026-08-01", deadline_date: "2026-08-30", problem_set_version_id: "neetcode-150-2026-08-15", status: "accepted",
+    }).select("id").single();
+    expect(invitation.error).toBeNull();
+    const challenge = await admin.from("challenges").insert({
+      invitation_id: invitation.data!.id, inviter_id: deleting.id, invited_member_id: partner.id,
+      challenge_time_zone: "UTC", start_date: "2026-08-01", deadline_date: "2026-08-30",
+      problem_set_version_id: "neetcode-150-2026-08-15", status: "active",
+    }).select("id").single();
+    expect(challenge.error).toBeNull();
+    const challengeId = challenge.data!.id as string;
+    expect((await admin.from("challenge_members").insert([
+      { challenge_id: challengeId, member_id: deleting.id, member_email: deleting.email, display_name: "DeleteMe" },
+      { challenge_id: challengeId, member_id: partner.id, member_email: partner.email, display_name: "DeletePartner" },
+    ])).error).toBeNull();
+    expect((await admin.from("member_commitments").insert([
+      { member_id: deleting.id, challenge_id: challengeId }, { member_id: partner.id, challenge_id: challengeId },
+    ])).error).toBeNull();
+    expect((await admin.from("solves").insert({
+      member_id: deleting.id, challenge_id: challengeId, problem_id: "problem:0217-contains-duplicate",
+    })).error).toBeNull();
+
+    const deleted = await deleteMember(deleting);
+    expect(deleted.error).toBeNull();
+    expect(deleted.data).toMatchObject({ deletedMemberId: expect.any(String) });
+    const partnerView = await partner.client.rpc("get_challenge_v1", { p_challenge_id: challengeId });
+    expect(partnerView.error).toBeNull();
+    expect(partnerView.data).toMatchObject({ status: "abandoned", terminalActorId: deleted.data.deletedMemberId, members: expect.arrayContaining([
+      expect.objectContaining({ memberId: deleted.data.deletedMemberId, email: "Deleted Member", displayName: "Deleted Member" }),
+    ]) });
+    const expired = await admin.rpc("get_challenge_at_v1", { p_challenge_id: challengeId, p_authoritative_now: "2027-08-17T00:00:00Z" });
+    expect(expired.error).toBeNull();
+    expect(expired.data).toBeNull();
+    const cleanup = await admin.rpc("cleanup_deleted_member_records_at_v1", { p_authoritative_now: "2027-08-17T00:00:00Z" });
+    expect(cleanup.error).toBeNull();
+    expect(cleanup.data).toBe(1);
+
+    const scheduledOwner = await profile("ScheduledDelete");
+    const scheduledPartner = await profile("ScheduledPartner");
+    const scheduledInvitation = await admin.from("invitations").insert({
+      inviter_id: scheduledOwner.id, invited_email: scheduledPartner.email, challenge_time_zone: "UTC",
+      start_date: "2099-01-01", deadline_date: "2099-01-30", problem_set_version_id: "neetcode-150-2026-08-15", status: "accepted",
+    }).select("id").single();
+    expect(scheduledInvitation.error).toBeNull();
+    const scheduled = await admin.from("challenges").insert({
+      invitation_id: scheduledInvitation.data!.id, inviter_id: scheduledOwner.id, invited_member_id: scheduledPartner.id,
+      challenge_time_zone: "UTC", start_date: "2099-01-01", deadline_date: "2099-01-30",
+      problem_set_version_id: "neetcode-150-2026-08-15", status: "scheduled",
+    }).select("id").single();
+    expect(scheduled.error).toBeNull();
+    const scheduledChallengeId = scheduled.data!.id as string;
+    expect((await admin.from("challenge_members").insert([
+      { challenge_id: scheduledChallengeId, member_id: scheduledOwner.id, member_email: scheduledOwner.email, display_name: "ScheduledDelete" },
+      { challenge_id: scheduledChallengeId, member_id: scheduledPartner.id, member_email: scheduledPartner.email, display_name: "ScheduledPartner" },
+    ])).error).toBeNull();
+    expect((await admin.from("member_commitments").insert([
+      { member_id: scheduledOwner.id, challenge_id: scheduledChallengeId }, { member_id: scheduledPartner.id, challenge_id: scheduledChallengeId },
+    ])).error).toBeNull();
+    const scheduledDeleted = await deleteMember(scheduledOwner);
+    expect(scheduledDeleted.error).toBeNull();
+    expect((await scheduledPartner.client.rpc("get_challenge_v1", { p_challenge_id: scheduledChallengeId })).data).toMatchObject({ status: "canceled" });
+
+    const empty = await profile("NoChallengeDelete");
+    const emptyDeleted = await deleteMember(empty);
+    expect(emptyDeleted.error).toBeNull();
+    expect((await admin.auth.admin.getUserById(empty.id)).data.user).toBeNull();
+    expect((await admin.from("member_preferences").select("member_id").eq("member_id", deleting.id)).data).toHaveLength(0);
+
+    const reRegistered = await admin.auth.admin.createUser({ email: deleting.email, password: "new-pass-12345", email_confirm: true });
+    expect(reRegistered.error).toBeNull();
+    expect(reRegistered.data.user?.id).not.toBe(deleting.id);
+  });
+
+  it("anonymizes an incoming Invitation, denies stale/outsider access, and expires each retention ledger window", async () => {
+    admin = createClient(credentials!.url, credentials!.serviceKey);
+    const inviter = await profile("IncomingInviteOwner");
+    const invitee = await profile("IncomingInvitee");
+    const outsider = await profile("IncomingOutsider");
+    const invitationId = await invitation(inviter, invitee, crypto.randomUUID());
+
+    const noticeBefore = await admin.from("transactional_notices")
+      .select("recipient_member_id, inviter_member_id, recipient_email")
+      .eq("event_key", `invitation:${invitationId}:created`).single();
+    expect(noticeBefore.error).toBeNull();
+    expect(noticeBefore.data).toMatchObject({ recipient_member_id: invitee.id, inviter_member_id: inviter.id });
+
+    const deleted = await deleteMember(invitee);
+    expect(deleted.error).toBeNull();
+    const deletedMemberId = (deleted.data as { deletedMemberId: string }).deletedMemberId;
+    const invitationRow = await admin.from("invitations")
+      .select("status, invited_email, deleted_member_record_id, retention_expires_at")
+      .eq("id", invitationId).single();
+    expect(invitationRow.error).toBeNull();
+    expect(invitationRow.data).toMatchObject({
+      status: "revoked", deleted_member_record_id: deletedMemberId,
+      invited_email: expect.stringMatching(/^deleted\+[0-9a-f]+@invalid\.larp-code\.example$/),
+    });
+    const inviterView = await inviter.client.rpc("get_invitation_v1", { p_invitation_id: invitationId });
+    expect(inviterView.error).toBeNull();
+    expect(inviterView.data).toMatchObject({ invitedEmail: "Deleted Member", status: "revoked" });
+    const noticeAfter = await admin.from("transactional_notices")
+      .select("recipient_member_id, inviter_member_id, recipient_email, inviter_display_name")
+      .eq("event_key", `invitation:${invitationId}:created`).single();
+    expect(noticeAfter.data).toMatchObject({
+      recipient_member_id: deletedMemberId, inviter_member_id: inviter.id,
+      recipient_email: expect.stringMatching(/^deleted\+[0-9a-f]+@invalid\.larp-code\.example$/),
+    });
+
+    const staleAccount = await invitee.client.rpc("get_member_account_v1");
+    expect(staleAccount.error).toBeNull();
+    expect(staleAccount.data).toBeNull();
+    const staleInvitation = await invitee.client.rpc("get_invitation_v1", { p_invitation_id: invitationId });
+    expect(staleInvitation.error?.code).toBe("42501");
+    const outsiderInvitation = await outsider.client.rpc("get_invitation_v1", { p_invitation_id: invitationId });
+    expect(outsiderInvitation.error?.code).toBe("42501");
+
+    const retention = await admin.rpc("get_deleted_member_retention_v1", { p_deleted_member_record_id: deletedMemberId });
+    expect(retention.error).toBeNull();
+    expect(retention.data).toMatchObject({
+      invitation: expect.any(String), challenge: expect.any(String),
+      diagnostic: expect.any(String), securityAudit: expect.any(String), backup: expect.any(String),
+      ledger: expect.arrayContaining([
+        expect.objectContaining({ category: "diagnostic", source: "repository_ledger" }),
+        expect.objectContaining({ category: "security_audit", source: "repository_ledger" }),
+        expect.objectContaining({ category: "backup", source: "managed_backup" }),
+      ]),
+    });
+    const invitationAtExpiry = await admin.rpc("get_invitation_at_v1", {
+      p_invitation_id: invitationId,
+      p_authoritative_now: "2026-09-16T00:00:00Z",
+    });
+    expect(invitationAtExpiry.error).toBeNull();
+    expect(invitationAtExpiry.data).toBeNull();
+
+    const monthCleanup = await admin.rpc("cleanup_deleted_member_records_at_v1", { p_authoritative_now: "2026-09-16T00:00:00Z" });
+    expect(monthCleanup.error).toBeNull();
+    const monthRetention = await admin.rpc("get_deleted_member_retention_v1", { p_deleted_member_record_id: deletedMemberId });
+    expect(monthRetention.data?.ledger).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: "security_audit" }),
+    ]));
+    expect(monthRetention.data?.ledger).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: "diagnostic" }),
+      expect.objectContaining({ category: "backup" }),
+    ]));
+    await admin.rpc("cleanup_deleted_member_records_at_v1", { p_authoritative_now: "2026-11-15T00:00:00Z" });
+    const securityRetention = await admin.rpc("get_deleted_member_retention_v1", { p_deleted_member_record_id: deletedMemberId });
+    expect(securityRetention.data?.ledger).toEqual([]);
+    const finalCleanup = await admin.rpc("cleanup_deleted_member_records_at_v1", { p_authoritative_now: "2027-08-17T00:00:00Z" });
+    expect(finalCleanup.data).toBeGreaterThanOrEqual(1);
+    expect((await admin.from("invitations").select("id").eq("id", invitationId)).data).toHaveLength(0);
   });
 });
 

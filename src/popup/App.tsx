@@ -83,6 +83,7 @@ function cooldownSeconds(state: SignInState, now: number): number {
 }
 
 const DOMAIN_MUTATION_COMMAND_KINDS: Partial<Record<PopupRequest["type"], TransactionCommandKind>> = {
+  delete_member_account: "delete_member_account",
   update_display_name: "update_display_name",
   create_invitation: "create_invitation",
   accept_invitation: "accept_invitation",
@@ -395,6 +396,12 @@ function MemberAccountView({
   const [deadlineDate, setDeadlineDate] = useState("");
   const [isSubmitting, setSubmitting] = useState(false);
   const [isInviting, setInviting] = useState(false);
+  const [deletionOpen, setDeletionOpen] = useState(false);
+  const [deletionCodeSent, setDeletionCodeSent] = useState(false);
+  const [deletionConfirmation, setDeletionConfirmation] = useState("");
+  const [deletionOtp, setDeletionOtp] = useState("");
+  const [deletionBusy, setDeletionBusy] = useState(false);
+  const [deletionError, setDeletionError] = useState<string | undefined>();
 
   useEffect(() => setDisplayName(snapshot.account.displayName), [snapshot.account.displayName]);
 
@@ -425,6 +432,37 @@ function MemberAccountView({
       });
     } finally {
       setInviting(false);
+    }
+  }
+
+  async function requestDeletionCode() {
+    setDeletionError(undefined);
+    setDeletionBusy(true);
+    try {
+      const response = await onUpdate({ version: PROTOCOL_VERSION, type: "request_deletion_otp", email: snapshot.account.email });
+      if (response?.ok && response.auth?.status === "code_sent") setDeletionCodeSent(true);
+      else if (!response?.ok) setDeletionError(response?.error.message ?? "The deletion confirmation could not be requested.");
+    } finally {
+      setDeletionBusy(false);
+    }
+  }
+
+  async function deleteAccount(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (deletionBusy || deletionConfirmation !== "DELETE MY ACCOUNT" || deletionOtp.length !== 6) return;
+    setDeletionError(undefined);
+    setDeletionBusy(true);
+    try {
+      const response = await onUpdate({
+        version: PROTOCOL_VERSION,
+        type: "delete_member_account",
+        confirmation: deletionConfirmation,
+        otp: deletionOtp,
+      });
+      if (!response?.ok) setDeletionError(response?.error.message ?? "The account could not be deleted.");
+      else if (response.command?.status === "rejected") setDeletionError(response.command.message);
+    } finally {
+      setDeletionBusy(false);
     }
   }
 
@@ -525,6 +563,56 @@ function MemberAccountView({
       <a className="text-button policy-link" href="privacy.html" target="_blank" rel="noreferrer">
         Read the public privacy policy
       </a>
+      <hr />
+      <section aria-labelledby="delete-account-title">
+        <h3 id="delete-account-title">Delete Member Account</h3>
+        <p className="field-help">
+          This is irreversible. It ends any shared Challenge for both Members,
+          removes your account and identity data, and briefly shows your partner
+          a read-only “Deleted Member” record. Uninstalling the extension only
+          clears this device; it does not delete the server account.
+        </p>
+        {!deletionOpen && (
+          <button type="button" className="text-button" onClick={() => setDeletionOpen(true)}>
+            Start account deletion
+          </button>
+        )}
+        {deletionOpen && !deletionCodeSent && (
+          <button type="button" className="primary-button" onClick={() => void requestDeletionCode()} disabled={deletionBusy}>
+            {deletionBusy ? "Requesting confirmation…" : "Email me a fresh confirmation code"}
+          </button>
+        )}
+        {deletionOpen && deletionCodeSent && (
+          <form onSubmit={deleteAccount} aria-label="Irreversible account deletion">
+            <label htmlFor="delete-account-confirmation">Type DELETE MY ACCOUNT</label>
+            <input
+              id="delete-account-confirmation"
+              value={deletionConfirmation}
+              onChange={(event) => setDeletionConfirmation(event.target.value)}
+              autoComplete="off"
+              required
+              disabled={deletionBusy}
+            />
+            <label htmlFor="delete-account-code">Fresh six-digit email code</label>
+            <input
+              id="delete-account-code"
+              inputMode="numeric"
+              pattern="[0-9]{6}"
+              maxLength={6}
+              value={deletionOtp}
+              onChange={(event) => setDeletionOtp(event.target.value.replace(/\D/g, "").slice(0, 6))}
+              autoComplete="one-time-code"
+              required
+              disabled={deletionBusy}
+            />
+            {deletionError && <p className="auth-status error-status" role="alert">{deletionError}</p>}
+            <button type="submit" className="primary-button" disabled={deletionBusy || deletionConfirmation !== "DELETE MY ACCOUNT" || deletionOtp.length !== 6}>
+              {deletionBusy ? "Deleting account…" : "Permanently delete account"}
+            </button>
+            <button type="button" className="text-button" onClick={() => setDeletionOpen(false)} disabled={deletionBusy}>Cancel</button>
+          </form>
+        )}
+      </section>
       <button type="button" className="primary-button" onClick={() => void onSignOut()}>
         Sign out
       </button>
@@ -968,6 +1056,7 @@ export function App() {
     }
     if (request.type === "create_member_account") setSetupError(undefined);
     if (request.type === "update_display_name"
+      || request.type === "delete_member_account"
       || request.type === "accept_invitation"
       || request.type === "revoke_invitation"
       || request.type === "decline_invitation"
@@ -1001,6 +1090,12 @@ export function App() {
         if ("command" in response && response.command) setCommandOutcome(response.command);
         else if (!pendingCommandOf(response.snapshot)) setCommandOutcome(undefined);
         if (response.snapshot.kind === "signed_out") setAuthState(defaultSignInState);
+      } else if (request.type === "delete_member_account" && response.auth?.status === "ready") {
+        setRefreshing(false);
+        setAuthState(defaultSignInState);
+        setState((current) => current.status === "loaded"
+          ? { status: "loaded", snapshot: { ...current.snapshot, kind: "signed_out", worker: { ...current.snapshot.worker, sessionRestoredFromStorage: false } } }
+          : current);
       } else if (request.type === "sign_out") {
         setRefreshing(false);
         setState((current) => current.status === "loaded"

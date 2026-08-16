@@ -13,7 +13,10 @@ export type ProtocolVersion = typeof PROTOCOL_VERSION;
 /** Domain commands have their own version so command rollout can evolve independently. */
 export const TRANSACTION_COMMAND_VERSION = 1 as const;
 export type TransactionCommandVersion = typeof TRANSACTION_COMMAND_VERSION;
+export const DELETE_MEMBER_ACCOUNT_COMMAND_KIND = "delete_member_account" as const;
+export const DELETE_MEMBER_ACCOUNT_COMMAND_VERSION = TRANSACTION_COMMAND_VERSION;
 export type TransactionCommandKind =
+  | "delete_member_account"
   | "update_display_name"
   | "create_invitation"
   | "accept_invitation"
@@ -45,6 +48,10 @@ export type InvitationTerminalCommandIntent = Readonly<{
 }>;
 
 export type PendingCommand =
+  | (PendingCommandBase & {
+      kind: "delete_member_account";
+      intent: { confirmation: true };
+    })
   | (PendingCommandBase & {
       kind: "update_display_name";
       intent: { displayName: string };
@@ -408,6 +415,17 @@ export type PopupRequest =
     }
   | {
       version: ProtocolVersion;
+      type: "request_deletion_otp";
+      email: string;
+    }
+  | {
+      version: ProtocolVersion;
+      type: "delete_member_account";
+      confirmation: string;
+      otp: string;
+    }
+  | {
+      version: ProtocolVersion;
       type: "update_display_name";
       displayName: string;
     }
@@ -646,10 +664,13 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
     "requestedAt",
   ])) return false;
   if (value.version !== TRANSACTION_COMMAND_VERSION
-    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "abandon_challenge", "create_solve", "correct_solve"].includes(String(value.kind))
+    || !["delete_member_account", "update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "abandon_challenge", "create_solve", "correct_solve"].includes(String(value.kind))
     || !isString(value.idempotencyKey) || !isString(value.memberId)
     || !isString(value.memberEmail) || !isString(value.requestedAt)) return false;
   if (!isRecord(value.intent)) return false;
+  if (value.kind === "delete_member_account") {
+    return hasExactKeys(value.intent, ["confirmation"]) && value.intent.confirmation === true;
+  }
   if (value.kind === "update_display_name") {
     return hasExactKeys(value.intent, ["displayName"])
       && typeof value.intent.displayName === "string";
@@ -680,7 +701,7 @@ export function isPendingCommand(value: unknown): value is PendingCommand {
 
 export function isCommandOutcome(value: unknown): value is CommandOutcome {
   if (!isRecord(value) || typeof value.status !== "string"
-    || !["update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "abandon_challenge", "create_solve", "correct_solve"].includes(String(value.kind))) return false;
+    || !["delete_member_account", "update_display_name", "create_invitation", "accept_invitation", "revoke_invitation", "decline_invitation", "cancel_challenge", "abandon_challenge", "create_solve", "correct_solve"].includes(String(value.kind))) return false;
   if (value.status === "applied") {
     return hasExactKeys(value, ["status", "kind", "idempotencyKey"]) && isString(value.idempotencyKey);
   }
@@ -818,6 +839,14 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
       && typeof value.adultConfirmed === "boolean"
       && typeof value.consentAccepted === "boolean";
   }
+  if (value.type === "request_deletion_otp") {
+    return hasExactKeys(value, ["version", "type", "email"]) && isString(value.email);
+  }
+  if (value.type === "delete_member_account") {
+    return hasExactKeys(value, ["version", "type", "confirmation", "otp"])
+      && typeof value.confirmation === "string"
+      && typeof value.otp === "string";
+  }
   if (value.type === "update_display_name") {
     return hasExactKeys(value, ["version", "type", "displayName"]) && typeof value.displayName === "string";
   }
@@ -884,7 +913,7 @@ export function isPopupResponse(value: unknown): value is PopupResponse {
         : hasAuth
           ? ["ok", "auth"]
           : ["ok", "command"];
-    const expectedWithCommand = hasSnapshot ? [...expectedKeys, "command"] : expectedKeys;
+    const expectedWithCommand = hasSnapshot || hasAuth ? [...expectedKeys, "command"] : expectedKeys;
     return hasExactKeys(value, expectedKeys) || hasExactKeys(value, expectedWithCommand);
   }
   if (!hasExactKeys(value, ["ok", "error"]) || !isRecord(value.error)) return false;
