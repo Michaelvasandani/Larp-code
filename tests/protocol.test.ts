@@ -18,6 +18,22 @@ const signedOutSnapshot: AppSnapshot = {
   worker: { bootId: "boot-1", bootCount: 1, sessionRestoredFromStorage: false },
 };
 
+const accountSnapshot: AppSnapshot = {
+  ...signedOutSnapshot,
+  kind: "account",
+  account: {
+    id: "member-1",
+    email: "member@example.test",
+    displayName: "Ada",
+    status: "active",
+    createdAt: "2026-08-15T00:00:00.000Z",
+    updatedAt: "2026-08-15T00:00:00.000Z",
+    adultConfirmedAt: "2026-08-15T00:00:00.000Z",
+    consentAcceptedAt: "2026-08-15T00:00:00.000Z",
+    consentVersion: "PRIV-031-v1",
+  },
+};
+
 describe("versioned popup/worker protocol", () => {
   it("accepts a current snapshot request", () => {
     const request: PopupRequest = { version: PROTOCOL_VERSION, type: "get_snapshot" };
@@ -32,11 +48,16 @@ describe("versioned popup/worker protocol", () => {
 
   it("accepts a successful complete snapshot response", () => {
     expect(isPopupResponse({ ok: true, snapshot: signedOutSnapshot })).toBe(true);
+    expect(isPopupResponse({ ok: true, snapshot: accountSnapshot })).toBe(true);
   });
 
   it("rejects partial or malformed success responses", () => {
     expect(isPopupResponse({ ok: true, snapshot: { kind: "signed_out" } })).toBe(false);
     expect(isPopupResponse({ ok: true, snapshot: signedOutSnapshot, stale: true })).toBe(false);
+    expect(isPopupResponse({
+      ok: true,
+      snapshot: { ...accountSnapshot, account: { ...accountSnapshot.account, displayName: "" } },
+    })).toBe(false);
   });
 
   it("accepts typed errors without allowing arbitrary response shapes", () => {
@@ -67,6 +88,37 @@ describe("versioned popup/worker protocol", () => {
       email: "member@example.test",
     })).toBe(true);
     expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "sign_out" })).toBe(true);
+    expect(isPopupRequest({
+      version: PROTOCOL_VERSION,
+      type: "create_member_account",
+      displayName: "Ada",
+      adultConfirmed: true,
+      consentAccepted: true,
+    })).toBe(true);
+  });
+
+  it("rejects incomplete account setup requests", () => {
+    expect(isPopupRequest({
+      version: PROTOCOL_VERSION,
+      type: "create_member_account",
+      displayName: "Ada",
+      adultConfirmed: false,
+      consentAccepted: true,
+    })).toBe(true);
+    expect(isPopupRequest({
+      version: PROTOCOL_VERSION,
+      type: "create_member_account",
+      displayName: "Ada",
+      adultConfirmed: true,
+    })).toBe(false);
+    expect(isPopupRequest({
+      version: PROTOCOL_VERSION,
+      type: "create_member_account",
+      displayName: "Ada",
+      adultConfirmed: true,
+      consentAccepted: true,
+      email: "outsider@example.test",
+    })).toBe(false);
   });
 
   it("accepts distinct, credential-free sign-in states", () => {

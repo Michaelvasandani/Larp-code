@@ -77,6 +77,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         popup: resolve(process.cwd(), "src/popup.html"),
+        privacy: resolve(process.cwd(), "src/privacy.html"),
         "service-worker": resolve(process.cwd(), "src/worker/service-worker.ts"),
       },
       output: {

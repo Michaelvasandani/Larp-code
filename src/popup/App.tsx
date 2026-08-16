@@ -9,6 +9,7 @@ import {
   type PopupResponse,
   type SignInState,
 } from "../shared/protocol";
+import { DISPLAY_NAME_MAX_LENGTH, stripDisplayNameControlCharacters } from "../worker/member-account";
 
 type LoadState =
   | { status: "loading" }
@@ -205,15 +206,144 @@ function AuthenticatedPlaceholder({
   );
 }
 
+function SetupRequired({
+  snapshot,
+  onCreate,
+  error,
+}: {
+  snapshot: Extract<AppSnapshot, { kind: "setup_required" }>;
+  onCreate: (request: PopupRequest) => Promise<void>;
+  error?: string;
+}) {
+  const [displayName, setDisplayName] = useState("");
+  const [adultConfirmed, setAdultConfirmed] = useState(false);
+  const [consentAccepted, setConsentAccepted] = useState(false);
+  const [isSubmitting, setSubmitting] = useState(false);
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!adultConfirmed || !consentAccepted || !displayName.trim()) return;
+    setSubmitting(true);
+    try {
+      await onCreate({
+        version: PROTOCOL_VERSION,
+        type: "create_member_account",
+        displayName,
+        adultConfirmed,
+        consentAccepted,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <section className="state-card" aria-labelledby="setup-title">
+      <p className="eyebrow">MEMBER ACCOUNT</p>
+      <h2 id="setup-title">Finish setting up your account</h2>
+      <p>
+        Your verified email is the only account and recovery authority. Before
+        you continue, please review what larp-code keeps and why.
+      </p>
+      <div className="privacy-summary" aria-label="Data collection summary">
+        <p><strong>Collected:</strong> your verified email, display name, and essential account and consent timestamps.</p>
+        <p><strong>Used for:</strong> sign-in, the shared Challenge and Pet experience, service security, and diagnosing failures.</p>
+        <p><strong>Not collected:</strong> birth date, browsing activity, page contents, contacts, advertising identifiers, or analytics.</p>
+      </div>
+      <p>
+        larp-code is for adults 18 and older. We do not collect a birth date.
+        Read the <a href="privacy.html" target="_blank" rel="noreferrer">public privacy policy</a> before accepting.
+      </p>
+      <form onSubmit={submit} aria-describedby="display-name-help">
+        <label htmlFor="member-display-name">Display name</label>
+        <input
+          id="member-display-name"
+          type="text"
+          autoComplete="nickname"
+          maxLength={DISPLAY_NAME_MAX_LENGTH}
+          value={displayName}
+          onChange={(event) => setDisplayName(stripDisplayNameControlCharacters(event.target.value))}
+          required
+          aria-describedby="display-name-help"
+        />
+        <p id="display-name-help" className="field-help">
+          1–{DISPLAY_NAME_MAX_LENGTH} characters. Names are not unique; control characters are removed.
+        </p>
+        <fieldset>
+          <legend>Consent</legend>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={adultConfirmed}
+              onChange={(event) => setAdultConfirmed(event.target.checked)}
+              required
+            />
+            <span>I confirm that I am at least 18 years old.</span>
+          </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={consentAccepted}
+              onChange={(event) => setConsentAccepted(event.target.checked)}
+              required
+            />
+            <span>I understand and affirmatively consent to the collection and uses described above and in the privacy policy.</span>
+          </label>
+        </fieldset>
+        {error && <p id="setup-status" className="auth-status error-status" role="alert">{error}</p>}
+        <button type="submit" className="primary-button" disabled={isSubmitting || !adultConfirmed || !consentAccepted || !displayName.trim()}>
+          {isSubmitting ? "Creating account…" : "Create Member Account"}
+        </button>
+      </form>
+      <SnapshotDetails snapshot={snapshot} />
+    </section>
+  );
+}
+
+function MemberAccountView({
+  snapshot,
+  onSignOut,
+}: {
+  snapshot: Extract<AppSnapshot, { kind: "account" }>;
+  onSignOut: () => Promise<void>;
+}) {
+  return (
+    <section className="state-card" aria-labelledby="account-title">
+      <p className="eyebrow">MEMBER ACCOUNT</p>
+      <h2 id="account-title">Welcome, {snapshot.account.displayName}</h2>
+      <dl className="account-details">
+        <div>
+          <dt>Display name</dt>
+          <dd>{snapshot.account.displayName}</dd>
+        </div>
+        <div>
+          <dt>Verified email</dt>
+          <dd>{snapshot.account.email}</dd>
+        </div>
+      </dl>
+      <p>Your email remains your sole sign-in and recovery authority.</p>
+      <a className="text-button policy-link" href="privacy.html" target="_blank" rel="noreferrer">
+        Read the public privacy policy
+      </a>
+      <button type="button" className="primary-button" onClick={() => void onSignOut()}>
+        Sign out
+      </button>
+      <SnapshotDetails snapshot={snapshot} />
+    </section>
+  );
+}
+
 export function App() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [authState, setAuthState] = useState<SignInState>(defaultSignInState);
+  const [setupError, setSetupError] = useState<string | undefined>();
 
   const loadSnapshot = useCallback(() => {
     setState({ status: "loading" });
     void requestSnapshot()
       .then((snapshot) => {
         setAuthState(defaultSignInState);
+        setSetupError(undefined);
         setState({ status: "loaded", snapshot });
       })
       .catch((error: unknown) => {
@@ -229,10 +359,12 @@ export function App() {
     if (request.type === "request_email_otp" || request.type === "resend_email_otp") {
       setAuthState({ status: "requesting_code" });
     }
+    if (request.type === "create_member_account") setSetupError(undefined);
     try {
       const response = await sendRequest(request);
       if (!response.ok) {
         if (response.error.code === "connection_unavailable") setAuthState({ status: "service_unavailable" });
+        if (request.type === "create_member_account") setSetupError(response.error.message);
         return;
       }
       if (response.auth) setAuthState(response.auth);
@@ -253,6 +385,7 @@ export function App() {
       }
     } catch {
       setAuthState({ status: "service_unavailable" });
+      if (request.type === "create_member_account") setSetupError("The larp-code connection is unavailable.");
     }
   }, []);
 
@@ -300,7 +433,18 @@ export function App() {
         <SignedOut snapshot={state.snapshot} onRetry={loadSnapshot} authState={authState} onAction={sendAuthAction} />
       )}
 
-      {state.status === "loaded" && state.snapshot.kind !== "signed_out" && (
+      {state.status === "loaded" && state.snapshot.kind === "setup_required" && (
+        <SetupRequired snapshot={state.snapshot} onCreate={sendAuthAction} error={setupError} />
+      )}
+
+      {state.status === "loaded" && state.snapshot.kind === "account" && (
+        <MemberAccountView snapshot={state.snapshot} onSignOut={signOut} />
+      )}
+
+      {state.status === "loaded"
+        && state.snapshot.kind !== "signed_out"
+        && state.snapshot.kind !== "setup_required"
+        && state.snapshot.kind !== "account" && (
         <AuthenticatedPlaceholder snapshot={state.snapshot} onSignOut={signOut} />
       )}
 

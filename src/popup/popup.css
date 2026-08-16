@@ -84,6 +84,25 @@ p {
 
 .state-card p:last-of-type { margin-bottom: 20px; }
 
+.privacy-summary {
+  margin: 18px 0;
+  padding: 13px 14px 2px;
+  border-left: 3px solid #bd6d36;
+  background: #f4f0e7;
+}
+
+.privacy-summary p {
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.privacy-summary strong { color: #39473b; }
+
+a {
+  color: #2e5a3a;
+  font-weight: 750;
+}
+
 label {
   display: block;
   margin-bottom: 7px;
@@ -102,6 +121,42 @@ input {
   background: #fff;
   color: #243027;
   font: inherit;
+}
+
+input[type="checkbox"] {
+  width: auto;
+  margin: 2px 0 0;
+  accent-color: #2e5a3a;
+}
+
+.field-help {
+  margin: -5px 0 16px;
+  color: #798278;
+  font-size: 11px;
+}
+
+fieldset {
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+}
+
+legend {
+  margin-bottom: 8px;
+  color: #39473b;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.check-row {
+  display: flex;
+  align-items: start;
+  gap: 9px;
+  margin: 0 0 11px;
+  color: #5d665e;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 input:focus {
@@ -123,6 +178,33 @@ input:focus {
   margin: 14px 0 0;
   color: #5d665e;
   font-size: 12px;
+}
+
+.error-status { color: #9a3d2c; }
+
+.account-details {
+  margin: 20px 0;
+}
+
+.account-details div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+  border-bottom: 1px solid #e7e2d7;
+}
+
+.account-details dd {
+  max-width: 210px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.policy-link {
+  margin-bottom: 10px;
+  padding-left: 0;
+  text-align: left;
+  text-decoration: underline;
 }
 
 .primary-button {

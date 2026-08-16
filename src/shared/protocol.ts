@@ -1,3 +1,7 @@
+import { isMemberAccount, type MemberAccount } from "./member-account";
+
+export type { MemberAccount } from "./member-account";
+
 /**
  * The only popup/worker contract. Domain payloads can grow behind these
  * discriminants, but a client must never silently consume another version.
@@ -43,6 +47,12 @@ export type SignedOutSnapshot = SnapshotMetadata & {
 // their domain payloads belong to later implementation tickets.
 export type SetupRequiredSnapshot = SnapshotMetadata & {
   kind: "setup_required";
+  email: string;
+};
+
+export type MemberAccountSnapshot = SnapshotMetadata & {
+  kind: "account";
+  account: MemberAccount;
 };
 
 export type InvitationSnapshot = SnapshotMetadata & {
@@ -64,6 +74,7 @@ export type TerminalSnapshot = SnapshotMetadata & {
 export type AppSnapshot =
   | SignedOutSnapshot
   | SetupRequiredSnapshot
+  | MemberAccountSnapshot
   | InvitationSnapshot
   | ScheduledSnapshot
   | ActiveSnapshot
@@ -113,6 +124,13 @@ export type PopupRequest =
       type: "verify_email_otp";
       email: string;
       token: string;
+    }
+  | {
+      version: ProtocolVersion;
+      type: "create_member_account";
+      displayName: string;
+      adultConfirmed: boolean;
+      consentAccepted: boolean;
     }
   | {
       version: ProtocolVersion;
@@ -171,7 +189,9 @@ function isSnapshot(value: unknown): value is AppSnapshot {
     "backend",
     "worker",
   ] as const;
-  if (!hasExactKeys(value, keys)) return false;
+  if (!hasExactKeys(value, keys)
+    && !hasExactKeys(value, [...keys, "email"])
+    && !hasExactKeys(value, [...keys, "account"])) return false;
   if (value.contractVersion !== PROTOCOL_VERSION || !isString(value.authoritativeServerTime) || !isWorkerEvidence(value.worker)) {
     return false;
   }
@@ -181,7 +201,10 @@ function isSnapshot(value: unknown): value is AppSnapshot {
     || !isString(value.compatibility.minimumClientVersion)) return false;
   if (!isRecord(value.backend) || !hasExactKeys(value.backend, ["status", "schemaVersion"])
     || value.backend.status !== "reachable" || typeof value.backend.schemaVersion !== "number") return false;
-  return ["signed_out", "setup_required", "invitation", "scheduled", "active", "terminal"].includes(String(value.kind));
+  if (value.kind === "setup_required") return hasExactKeys(value, [...keys, "email"]) && isString(value.email);
+  if (value.kind === "account") return hasExactKeys(value, [...keys, "account"]) && isMemberAccount(value.account);
+  return ["signed_out", "invitation", "scheduled", "active", "terminal"].includes(String(value.kind))
+    && hasExactKeys(value, keys);
 }
 
 export function isPopupRequest(value: unknown): value is PopupRequest {
@@ -191,6 +214,12 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
   }
   if (value.type === "request_email_otp" || value.type === "resend_email_otp") {
     return hasExactKeys(value, ["version", "type", "email"]) && isString(value.email);
+  }
+  if (value.type === "create_member_account") {
+    return hasExactKeys(value, ["version", "type", "displayName", "adultConfirmed", "consentAccepted"])
+      && typeof value.displayName === "string"
+      && typeof value.adultConfirmed === "boolean"
+      && typeof value.consentAccepted === "boolean";
   }
   return value.type === "verify_email_otp"
     && hasExactKeys(value, ["version", "type", "email", "token"])

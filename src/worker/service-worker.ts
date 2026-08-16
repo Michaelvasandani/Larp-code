@@ -14,6 +14,11 @@ import {
   type AuthApi,
   type MemberStorage,
 } from "./auth-session";
+import {
+  createMemberAccountAdapter,
+  parseMemberAccount,
+  type MemberAccountRpc,
+} from "./member-account";
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
@@ -74,6 +79,25 @@ const authSessionAdapter = createAuthSessionAdapter({
   auth: client.auth as unknown as AuthApi,
   storage: memberStorage,
 });
+const memberAccountRpc: MemberAccountRpc = {
+  async getMemberAccount() {
+    const response = await client.rpc("get_member_account_v1");
+    const data: unknown = response.data;
+    const error: unknown = response.error;
+    if (error) throw error;
+    return data === null ? null : parseMemberAccount(data);
+  },
+  async createMemberAccount(input) {
+    const { data, error } = await client.rpc("create_member_account_v1", {
+      p_display_name: input.displayName,
+      p_adult_confirmed: input.adultConfirmed,
+      p_consent_accepted: input.consentAccepted,
+      p_consent_version: input.consentVersion,
+    });
+    if (error) throw error;
+    return parseMemberAccount(data);
+  },
+};
 const bootId = crypto.randomUUID();
 const initialSessionStatePromise = authSessionAdapter.restoreSession();
 let pendingSnapshotSession: typeof initialSessionStatePromise | undefined = initialSessionStatePromise;
@@ -143,9 +167,16 @@ async function getAppSnapshot(): Promise<AppSnapshot> {
   ]);
   if (sessionState.status === "service_unavailable") throw new Error("The authentication connection is unavailable.");
   const metadata = snapshotMetadata(health, worker);
-  return sessionState.status === "authenticated"
-    ? { ...metadata, kind: "setup_required" }
-    : { ...metadata, kind: "signed_out" };
+  if (sessionState.status !== "authenticated") return { ...metadata, kind: "signed_out" };
+
+  const memberAccount = createMemberAccountAdapter({ rpc: memberAccountRpc, session: sessionState.session });
+  const account = await memberAccount.getMemberAccount();
+  if (!account) {
+    const email = sessionState.session.user.email;
+    if (!email) throw new Error("The authenticated session has no verified email.");
+    return { ...metadata, kind: "setup_required", email };
+  }
+  return { ...metadata, kind: "account", account };
 }
 
 function diagnosticId(): string {
@@ -155,9 +186,17 @@ function diagnosticId(): string {
 function toProtocolError(error: unknown): ProtocolError {
   const message = error instanceof Error ? error.message : String(error);
   const isConnectionError = /fetch|network|connect|supabase|failed to reach|unavailable|socket|refused|reset|aborted|json/i.test(message);
+  const isUnauthorized = /unauthorized|authentication is required|verified email is required/i.test(message);
+  const isBadRequest = /required|characters or fewer|consent version|adult confirmation/i.test(message);
   return {
-    code: isConnectionError ? "connection_unavailable" : "internal",
-    message: isConnectionError ? "The larp-code connection is unavailable." : "The foundation could not load current state.",
+    code: isConnectionError ? "connection_unavailable" : isUnauthorized ? "unauthorized" : isBadRequest ? "bad_request" : "internal",
+    message: isConnectionError
+      ? "The larp-code connection is unavailable."
+      : isUnauthorized
+        ? "Sign in with the verified email to continue."
+        : isBadRequest
+          ? message
+          : "The foundation could not load current state.",
     diagnosticId: diagnosticId(),
   };
 }
@@ -178,6 +217,14 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
         const result = await authSessionAdapter.verifyEmailOtp(request.email, request.token);
         if (result.status === "authenticated") return { ok: true, snapshot: await getAppSnapshot() };
         return responseWithAuth(result);
+      }
+      case "create_member_account": {
+        const sessionState = await authSessionAdapter.restoreSession();
+        if (sessionState.status === "service_unavailable") throw new Error("The authentication connection is unavailable.");
+        if (sessionState.status !== "authenticated") throw new Error("Authentication is required.");
+        const memberAccount = createMemberAccountAdapter({ rpc: memberAccountRpc, session: sessionState.session });
+        await memberAccount.createMemberAccount(request);
+        return { ok: true, snapshot: await getAppSnapshot() };
       }
       case "sign_out": {
         await authSessionAdapter.signOut();
