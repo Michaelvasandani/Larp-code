@@ -27,7 +27,7 @@
 - [x] Deploy all database migrations.
 - [x] Import the reviewed 150-problem catalog.
 - [x] Deploy Edge Functions.
-- [ ] Configure scheduled lifecycle and retention jobs.
+- [x] Configure the private-beta lifecycle and retention job (`larp-code-lifecycle-maintenance-v1`, every five minutes).
 - [x] Verify RLS and least-privilege grants.
 - [ ] Enable SSL enforcement.
 - [ ] Configure production Auth and OTP limits.
@@ -85,7 +85,19 @@ References: [Supabase custom SMTP](https://supabase.com/docs/guides/auth/auth-sm
 - [ ] Test sign-out.
 - [ ] Test account deletion.
 - [ ] Confirm no LeetCode or NeetCode page access occurs.
-- [ ] Capture a production-controlled network trace.
+- [x] Capture a production-controlled network trace against `https://nbdisurpcxicqiojuyhe.supabase.co`.
+
+## Private beta fast track
+
+- [x] Accept Supabase Free plan pausing and backup limitations for the private beta.
+- [x] Build and package a production-configured beta candidate.
+- [x] Verify the candidate contains only the exact Supabase HTTPS/WSS origins and safe publishable key.
+- [x] Independently verify the candidate SHA-256 (`439cc71a153a54e553a75dc8f90339add7ebf0b20993f16b6f02bdd93df3bbdc`).
+- [ ] Finish dashboard security and Auth settings after owner sign-in.
+- [ ] Configure beta-capable OTP and transactional email delivery.
+- [ ] Complete the two-account production journey.
+- [ ] Complete the human visual/disclosure review and Gate 5 attestation.
+- [ ] Finish the Chrome Web Store publisher account and upload as **Private**.
 
 ## Release candidate
 

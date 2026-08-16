@@ -11,24 +11,29 @@ Recorded: 2026-08-16
 - Connector-reported state after creation: `ACTIVE_HEALTHY`
 - Dashboard-reported plan: Free
 
-The Free plan does not satisfy the launch checklist's paid, non-pausable
-requirement. The current dashboard session also reports insufficient permission
-to update database and Auth configuration, so SSL enforcement, backups, Auth
-limits, SMTP, and owner MFA remain unverified.
+The publisher accepted the Free plan's pausing and backup limitations for the
+private beta. A paid, non-pausable plan remains the default public-launch gate.
+Dashboard sign-in is still required to verify or update SSL enforcement, Auth
+limits, SMTP, and owner MFA.
 
 ## Deployed state
 
 - All repository migrations through
-  `20260816201938_function_least_privilege.sql` are recorded in production.
+  `20260816210649_scheduled_lifecycle_maintenance.sql` are recorded in production.
 - The reviewed catalog has one version and exactly 150 pinned records.
 - `dispatch-transactional-notice`, `reconcile-scheduled-work`, and
   `send-invitation-notice` are active at version 1.
 - The production health RPC returned schema version 14, command contract 2,
   snapshot contract 2, and recovery phase `open`.
 
-The mail and scheduled-work functions still require production secrets and
-schedules before they are operational. No Resend or scheduler secret was
-available during this deployment.
+The Postgres Cron job `larp-code-lifecycle-maintenance-v1` runs every five
+minutes as `postgres`. Its private entrypoint is not executable by `anon`,
+`authenticated`, or `service_role`; a controlled production invocation returned
+successful zero-work lifecycle and retention results. This removes the Edge
+Function scheduler-secret dependency for private beta lifecycle maintenance.
+
+Transactional mail still requires a beta-capable provider and deployment
+secrets. No Resend credential was available during this deployment.
 
 ## Access-control verification
 
