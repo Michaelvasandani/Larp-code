@@ -1,0 +1,393 @@
+{
+  "schemaVersion": 1,
+  "generator": {
+    "revision": "grovekin-stills-v1+source-2d38654e5acbd31b2be63afb5710d9fa5c57bc1148a099eebe0dd0b8e119f5df+generator-704c5d032951cafb9ad16ddccde859ad3529139a68b3feee849fbec190e992ed",
+    "command": "node art/grovekin/generate.mjs --output-dir <output-dir>",
+    "source": "art/grovekin/generate.mjs",
+    "drawingSource": "art/grovekin/source.mjs",
+    "sourceSha256": "2d38654e5acbd31b2be63afb5710d9fa5c57bc1148a099eebe0dd0b8e119f5df",
+    "generatorSha256": "704c5d032951cafb9ad16ddccde859ad3529139a68b3feee849fbec190e992ed"
+  },
+  "canvas": {
+    "width": 48,
+    "height": 48,
+    "alpha": "straight-rgba"
+  },
+  "palette": {
+    "name": "Grovekin project-authored palette v1",
+    "colors": {
+      "transparent": "#00000000",
+      "ink": "#26383b",
+      "outline": "#395556",
+      "bodyHealthy": "#b8dc97",
+      "bodyLight": "#d8edb4",
+      "bodyShadow": "#79ad7e",
+      "bodyHungry": "#e4c481",
+      "bodyHungryLight": "#f2dba0",
+      "bodySad": "#9fc4c0",
+      "bodySadLight": "#c6e0d2",
+      "bodyDeteriorated": "#899b86",
+      "bodyDeterioratedLight": "#a9b69a",
+      "leaf": "#63b878",
+      "leafBright": "#91d88a",
+      "leafDark": "#34745d",
+      "leafMuted": "#718d72",
+      "flower": "#e69a84",
+      "flowerLight": "#f4c09a",
+      "berry": "#e7a55f",
+      "tear": "#67b8cf",
+      "food": "#f1c45e",
+      "paper": "#f4f1d9",
+      "grid": "#aab99b"
+    }
+  },
+  "stages": [
+    {
+      "id": "stage-1",
+      "label": "Seedling",
+      "growth": "single-sprout"
+    },
+    {
+      "id": "stage-2",
+      "label": "Branchling",
+      "growth": "side-leaves"
+    },
+    {
+      "id": "stage-3",
+      "label": "Blooming",
+      "growth": "flower-crown"
+    },
+    {
+      "id": "stage-4",
+      "label": "Canopy",
+      "growth": "wide-canopy"
+    }
+  ],
+  "conditions": [
+    {
+      "id": "healthy",
+      "label": "Healthy",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "hungry",
+      "label": "Hungry",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "sad",
+      "label": "Sad",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "deteriorated",
+      "label": "Deteriorated",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    }
+  ],
+  "stills": [
+    {
+      "id": "stage-1-healthy",
+      "stage": "stage-1",
+      "stageLabel": "Seedling",
+      "condition": "healthy",
+      "conditionLabel": "Healthy",
+      "file": "stills/stage-1-healthy.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "23ab1d88350c1b56ba8dd829129691f854a96dfc88a57bf304a6234f0c2574e6",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-1-hungry",
+      "stage": "stage-1",
+      "stageLabel": "Seedling",
+      "condition": "hungry",
+      "conditionLabel": "Hungry",
+      "file": "stills/stage-1-hungry.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "ff33d2de1415ec49e07bce837ee28ea98f01d58315316fba37891d6d6afecdf3",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "stage-1-sad",
+      "stage": "stage-1",
+      "stageLabel": "Seedling",
+      "condition": "sad",
+      "conditionLabel": "Sad",
+      "file": "stills/stage-1-sad.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "550ea86160791f392c86840fc876fbda9c398c5d69913faef932ac5c06f65b1d",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "stage-1-deteriorated",
+      "stage": "stage-1",
+      "stageLabel": "Seedling",
+      "condition": "deteriorated",
+      "conditionLabel": "Deteriorated",
+      "file": "stills/stage-1-deteriorated.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "e4298988c3dc73234d1695d3bd2606a0573e162e7b860934b212a63a5259f10d",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    },
+    {
+      "id": "stage-2-healthy",
+      "stage": "stage-2",
+      "stageLabel": "Branchling",
+      "condition": "healthy",
+      "conditionLabel": "Healthy",
+      "file": "stills/stage-2-healthy.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "895e6c0ad43b3d5a9e6c8b5b7ab6581a6b0d127c069d1bdc078cda944671727b",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-2-hungry",
+      "stage": "stage-2",
+      "stageLabel": "Branchling",
+      "condition": "hungry",
+      "conditionLabel": "Hungry",
+      "file": "stills/stage-2-hungry.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "5d44133a576b55bc07a83fb432003233bf76f29de1c2406642f86edd95b363fa",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "stage-2-sad",
+      "stage": "stage-2",
+      "stageLabel": "Branchling",
+      "condition": "sad",
+      "conditionLabel": "Sad",
+      "file": "stills/stage-2-sad.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "4741c09a7e640bc80a7633be70b3a10a732afcec5a294e60e9c1f3b320cb5b25",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "stage-2-deteriorated",
+      "stage": "stage-2",
+      "stageLabel": "Branchling",
+      "condition": "deteriorated",
+      "conditionLabel": "Deteriorated",
+      "file": "stills/stage-2-deteriorated.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "c68dc15b17282c37564ea07f353344824162f281386014016b16d631ea9fa299",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    },
+    {
+      "id": "stage-3-healthy",
+      "stage": "stage-3",
+      "stageLabel": "Blooming",
+      "condition": "healthy",
+      "conditionLabel": "Healthy",
+      "file": "stills/stage-3-healthy.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "eda3fc55d9fcb304fd7ddd6802e48dd023f0c39e5b8692009fd9115a9a27e0f1",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-3-hungry",
+      "stage": "stage-3",
+      "stageLabel": "Blooming",
+      "condition": "hungry",
+      "conditionLabel": "Hungry",
+      "file": "stills/stage-3-hungry.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "6df564886e84c77de58602ab7cfdeab8b811d5caa01ec0cb2aa9be71e56c7569",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "stage-3-sad",
+      "stage": "stage-3",
+      "stageLabel": "Blooming",
+      "condition": "sad",
+      "conditionLabel": "Sad",
+      "file": "stills/stage-3-sad.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "629f07f5525c48f1939d9be07d73b8d5aef0038f620e53f2060cdd32486a3b6e",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "stage-3-deteriorated",
+      "stage": "stage-3",
+      "stageLabel": "Blooming",
+      "condition": "deteriorated",
+      "conditionLabel": "Deteriorated",
+      "file": "stills/stage-3-deteriorated.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "68791e1f811825c54063fd87cd5205940a686b7b2fd8afc7e0e08e1ac7f0228a",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    },
+    {
+      "id": "stage-4-healthy",
+      "stage": "stage-4",
+      "stageLabel": "Canopy",
+      "condition": "healthy",
+      "conditionLabel": "Healthy",
+      "file": "stills/stage-4-healthy.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "85a0bdb17e056d6c320bb9e1b85a150433eb246f3f3276a206b370034023aca1",
+      "semanticFlags": [
+        "upright",
+        "open-eyes",
+        "intact-growth"
+      ]
+    },
+    {
+      "id": "stage-4-hungry",
+      "stage": "stage-4",
+      "stageLabel": "Canopy",
+      "condition": "hungry",
+      "conditionLabel": "Hungry",
+      "file": "stills/stage-4-hungry.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "1dfc9a3682ff2429cba454b84885c84e736d14ae2b0c7456152db9831d847f62",
+      "semanticFlags": [
+        "forward-lean",
+        "open-mouth",
+        "food-cue"
+      ]
+    },
+    {
+      "id": "stage-4-sad",
+      "stage": "stage-4",
+      "stageLabel": "Canopy",
+      "condition": "sad",
+      "conditionLabel": "Sad",
+      "file": "stills/stage-4-sad.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "17111aa966ae16578672a9b550b7eab0cc08422c240c29577697fdd47ca322b2",
+      "semanticFlags": [
+        "drooped",
+        "lowered-eyes",
+        "one-tear"
+      ]
+    },
+    {
+      "id": "stage-4-deteriorated",
+      "stage": "stage-4",
+      "stageLabel": "Canopy",
+      "condition": "deteriorated",
+      "conditionLabel": "Deteriorated",
+      "file": "stills/stage-4-deteriorated.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "2e286e3639c25fabaabf9f6becbf7e330a416fddca8fbe96e56301da1910232c",
+      "semanticFlags": [
+        "low-posture",
+        "closed-eyes",
+        "muted-growth",
+        "broken-accent",
+        "recoverable"
+      ]
+    }
+  ],
+  "spritesheet": {
+    "file": "spritesheet/grovekin-stills.png",
+    "width": 192,
+    "height": 192,
+    "layout": {
+      "columns": 4,
+      "rows": 4,
+      "order": "stage-major, condition order healthy/hungry/sad/deteriorated"
+    },
+    "sha256": "678d1eedb69f1b0035be6053893dfd34beb33996ba824f164c8c4f96478560ef"
+  },
+  "contactSheet": {
+    "file": "contact-sheet.png",
+    "width": 216,
+    "height": 216,
+    "layout": {
+      "rows": "Evolution Stage 1 through 4",
+      "columns": "Healthy, Hungry, Sad, Deteriorated"
+    },
+    "sha256": "68fe07c230779e28e8449c24fa0db35cefd95f128c7652b7ede6cc8c5f81507f"
+  }
+}
