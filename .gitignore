@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+.chrome-profile/
+.DS_Store
+.supabase/
+supabase/.temp/
+supabase/.branches/

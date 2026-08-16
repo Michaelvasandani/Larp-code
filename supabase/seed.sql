@@ -1,0 +1,1 @@
+-- The foundation has no domain seed data. Each later ticket owns its fixtures.
