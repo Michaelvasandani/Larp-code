@@ -102,7 +102,7 @@ Google API exception.
 
 ## Public privacy URL
 
-`privacy.html` is packaged, linked in-product, and is available without
-authentication. The final Store submission must enter the publisher's public
-HTTPS URL serving this exact policy; a local file path is not acceptable Store
-evidence.
+`privacy.html` is packaged, linked in-product, and is publicly available
+without authentication at <https://larp-code.vercel.app/privacy>. The deployed
+page was verified byte-for-byte against the packaged source policy on August
+16, 2026. The Store submission should use that HTTPS URL.

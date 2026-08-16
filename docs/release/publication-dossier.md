@@ -35,11 +35,13 @@ derived shared Grovekin Pet condition. It does not detect browser activity,
 scrape or fetch NeetCode/LeetCode, advertise, profile, sell data, send
 reminders, or provide social moderation.
 
-The public privacy policy is packaged at [`privacy.html`](../../src/privacy.html)
-and linked from the product's Legal and About surface. It describes account,
-Invitation, Challenge, Solve, local-storage, provider, retention, deletion,
-security, and limited human-support access. Its public support route is the
-repository issue page; it does not require a larp-code login.
+The public privacy policy is packaged at [`privacy.html`](../../src/privacy.html),
+linked from the product's Legal and About surface, and deployed at
+<https://larp-code.vercel.app/privacy>. It describes account, Invitation,
+Challenge, Solve, local-storage, provider, retention, deletion, security, and
+limited human-support access. The public support page is
+<https://larp-code.vercel.app/support>; it routes to the repository issue page
+and does not require a larp-code login.
 
 ## Exact permission and origin decision
 

@@ -12,9 +12,10 @@
 ## Product identity
 
 - [ ] Choose the final product name.
-- [ ] Purchase or configure a production domain.
-- [ ] Create a monitored support email or support page.
-- [ ] Publish the privacy policy at a public HTTPS URL.
+- [x] Configure a public HTTPS production site; a Vercel `*.vercel.app` URL is acceptable and a custom web domain is optional (`https://larp-code.vercel.app`).
+- [x] Publish a public support page (`https://larp-code.vercel.app/support`).
+- [ ] Confirm the GitHub issue support route is monitored.
+- [x] Publish the privacy policy at a public HTTPS URL (`https://larp-code.vercel.app/privacy`).
 - [ ] Confirm the NeetCode/LeetCode non-affiliation and license wording.
 - [ ] Review and accept the documented catalog and brand risks.
 
@@ -39,7 +40,7 @@ Reference: [Supabase production checklist](https://supabase.com/docs/guides/depl
 ## Production email
 
 - [ ] Create a Resend account.
-- [ ] Add an authentication-only subdomain such as `auth.example.com`.
+- [ ] Configure an owned authentication-only sending domain or subdomain such as `auth.example.com` (purchase only if no suitable domain is already owned; `vercel.app` cannot be used).
 - [ ] Configure SPF.
 - [ ] Configure DKIM.
 - [ ] Configure DMARC.

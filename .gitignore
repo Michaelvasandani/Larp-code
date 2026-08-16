@@ -9,3 +9,4 @@ coverage/
 .supabase/
 supabase/.temp/
 supabase/.branches/
+site/dist/

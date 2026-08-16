@@ -26,6 +26,7 @@
     "recovery:rehearse": "node scripts/rehearse-recovery.mjs",
     "smoke": "node scripts/smoke.mjs",
     "accessibility:evidence": "node scripts/accessibility-evidence.mjs",
+    "site:build": "node site/build.mjs site/dist",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm package:check",
     "verify": "node scripts/verify.mjs"
   },
