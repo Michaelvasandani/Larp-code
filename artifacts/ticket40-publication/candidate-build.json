@@ -1,0 +1,9 @@
+{
+  "packageVersion": "0.1.0",
+  "sourceCommit": "b9c8b363fae5ea1d5b94bd0d2c202146291612bd",
+  "backendOrigin": "https://api.larp-code.example",
+  "archive": "larp-code-0.1.0.zip",
+  "archiveSha256": "4b44ff92181bd7e728b07c7d32298290c55c7c52925ea3d1f4ba029d3c93ff1c",
+  "generatedAt": "2026-08-16T14:40:31.173Z",
+  "humanReview": "pending"
+}
