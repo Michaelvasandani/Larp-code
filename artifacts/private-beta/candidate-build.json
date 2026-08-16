@@ -1,0 +1,13 @@
+{
+  "packageVersion": "0.1.0",
+  "sourceCommit": "07e10630f69287dcc9b4abc267751d38018dd2b3",
+  "backendOrigin": "https://nbdisurpcxicqiojuyhe.supabase.co",
+  "archive": "larp-code-0.1.0.zip",
+  "archiveSha256": "439cc71a153a54e553a75dc8f90339add7ebf0b20993f16b6f02bdd93df3bbdc",
+  "networkTrace": "network-trace.json",
+  "networkTraceSha256": "07a2593682c17ab21081e201bcb5d47d609978f6add04ff0faf7aeef80104754",
+  "generatedAt": "2026-08-16T21:10:08.245Z",
+  "qualification": "draft",
+  "releaseEligible": false,
+  "humanReview": "pending"
+}

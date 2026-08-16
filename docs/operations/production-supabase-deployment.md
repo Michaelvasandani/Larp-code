@@ -31,6 +31,8 @@ minutes as `postgres`. Its private entrypoint is not executable by `anon`,
 `authenticated`, or `service_role`; a controlled production invocation returned
 successful zero-work lifecycle and retention results. This removes the Edge
 Function scheduler-secret dependency for private beta lifecycle maintenance.
+The first automatic run started at `2026-08-16T21:10:00Z` and completed with
+status `succeeded` and return message `1 row`.
 
 Transactional mail still requires a beta-capable provider and deployment
 secrets. No Resend credential was available during this deployment.
