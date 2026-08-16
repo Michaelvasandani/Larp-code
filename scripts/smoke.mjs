@@ -1,3 +1,6 @@
+/* global chrome */
+
+import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -7,6 +10,7 @@ import puppeteer from "puppeteer-core";
 const root = resolve(import.meta.dirname, "..");
 const extensionPath = resolve(root, "dist");
 const chromePath = process.env.CHROME_BIN ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const mailpitUrl = process.env.MAILPIT_URL ?? "http://127.0.0.1:54324";
 let browser;
 let profilePath;
 
@@ -16,7 +20,12 @@ function check(condition, message) {
 }
 
 async function extensionIdFromTarget() {
-  const target = browser.targets().find((candidate) => candidate.type() === "service_worker");
+  const deadline = Date.now() + 15_000;
+  let target;
+  while (!target && Date.now() < deadline) {
+    target = browser.targets().find((candidate) => candidate.type() === "service_worker");
+    if (!target) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   if (!target) throw new Error("Packaged extension service worker target was not created.");
   const match = target.url().match(/^chrome-extension:\/\/([^/]+)\//);
   if (!match) throw new Error(`Unexpected service worker URL: ${target.url()}`);
@@ -28,16 +37,57 @@ async function openPopup(extensionId) {
   await page.setViewport({ width: 380, height: 600, deviceScaleFactor: 1 });
   await page.goto(`chrome-extension://${extensionId}/popup.html`);
   await page.waitForFunction(
-    () => document.body.innerText.includes("You’re signed out"),
+    () => document.body.innerText.includes("You’re signed out") || document.body.innerText.includes("Signed in"),
     { timeout: 15_000 },
   );
   return page;
+}
+
+async function waitForOtp(email) {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const response = await fetch(`${mailpitUrl}/api/v1/messages`);
+    const mailbox = await response.json();
+    const message = mailbox.messages
+      .filter((candidate) => candidate.To?.some((recipient) => recipient.Address === email))
+      .sort((left, right) => String(right.Created).localeCompare(String(left.Created)))[0];
+    if (message) {
+      const detailResponse = await fetch(`${mailpitUrl}/api/v1/message/${message.ID}`);
+      const detail = await detailResponse.json();
+      const code = detail.Text?.match(/\b\d{6}\b/)?.[0];
+      if (code) return code;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error("The local OTP mailbox did not contain a six-digit code.");
+}
+
+async function sendExtensionRequest(page, request) {
+  return page.evaluate(async (message) => chrome.runtime.sendMessage(message), request);
+}
+
+async function clickButton(page, label) {
+  await page.evaluate((buttonLabel) => {
+    const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes(buttonLabel));
+    if (!button) throw new Error(`Button not found: ${buttonLabel}`);
+    button.click();
+  }, label);
 }
 
 async function workerBootCount(page) {
   return page.evaluate(() => {
     const values = [...document.querySelectorAll(".snapshot-details dd")].map((element) => element.textContent);
     return Number(values[1]);
+  });
+}
+
+async function storedSessionIdentity(page) {
+  return page.evaluate(async () => {
+    const values = await chrome.storage.local.get(null);
+    const key = Object.keys(values).find((candidate) => candidate.includes("supabase") && candidate.includes("auth-token"));
+    if (!key || typeof values[key] !== "string") return null;
+    const stored = JSON.parse(values[key]);
+    return typeof stored.user?.id === "string" ? stored.user.id : null;
   });
 }
 
@@ -70,13 +120,116 @@ try {
   check((await page.title()) === "larp-code", "Packaged popup opens at 380 by 600");
   const firstBoot = await workerBootCount(page);
   check(Number.isInteger(firstBoot) && firstBoot >= 1, "Popup receives a fresh worker snapshot");
+
+  const email = `smoke-${Date.now()}@example.test`;
+  await clickButton(page, "Sign in with email");
+  await page.type("#member-email", email);
+  await clickButton(page, "Request sign-in code");
+  await page.waitForFunction(() => document.body.innerText.includes("A six-digit code can be entered now"));
+  let code = await waitForOtp(email);
+  await page.type("#member-code", "000000");
+  await clickButton(page, "Verify code");
+  await page.waitForFunction(() => document.body.innerText.includes("That code is not valid")
+    || document.body.innerText.includes("That code has expired")
+    || document.body.innerText.includes("Too many requests"));
+  const cooldown = await sendExtensionRequest(page, {
+    version: 1,
+    type: "resend_email_otp",
+    email,
+  });
+  check(cooldown.ok && cooldown.auth?.status === "resend_cooldown", "OTP resend cooldown is enforced by the worker");
+  await page.evaluate(async () => {
+    const values = await chrome.storage.local.get(null);
+    await chrome.storage.local.remove(Object.keys(values).filter((key) => key.includes("otp.cooldownUntil")));
+  });
+  let rateLimited = false;
+  for (let attempt = 0; attempt < 3 && !rateLimited; attempt += 1) {
+    const response = await sendExtensionRequest(page, {
+      version: 1,
+      type: "request_email_otp",
+      email,
+    });
+    rateLimited = response.ok && response.auth?.status === "rate_limited";
+    await page.evaluate(async () => {
+      const values = await chrome.storage.local.get(null);
+      await chrome.storage.local.remove(Object.keys(values).filter((key) => key.includes("otp.cooldownUntil")));
+    });
+  }
+  check(rateLimited, "Packaged OTP flow exposes a generic rate-limited state");
+  code = await waitForOtp(email);
+  await page.focus("#member-code");
+  await page.evaluate(() => {
+    const input = document.querySelector("#member-code");
+    if (!(input instanceof HTMLInputElement)) throw new Error("Code input not found");
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.type("#member-code", code);
+  await clickButton(page, "Verify code");
+  await page.waitForFunction(() => document.body.innerText.includes("Signed in"), { timeout: 15_000 });
+  check(true, "Packaged email OTP sign-in restores an authenticated snapshot");
+  const expired = await sendExtensionRequest(page, {
+    version: 1,
+    type: "verify_email_otp",
+    email,
+    token: code,
+  });
+  check(expired.ok && expired.auth?.status === "expired_code", "Reusing an OTP reaches the expired-code state");
+  const authenticatedIdentity = await storedSessionIdentity(page);
+  check(typeof authenticatedIdentity === "string", "Acceptance captures the authenticated identity without logging it");
   await page.close();
   page = await openPopup(extensionId);
+  check((await page.evaluate(() => document.body.innerText.includes("Signed in"))), "Authenticated session survives popup close and reopen");
   await terminateWorker(page, extensionId);
   await page.close();
   page = await openPopup(extensionId);
   const restartedBoot = await workerBootCount(page);
   check(restartedBoot > firstBoot, "Actual service worker termination is recoverable");
+  const restored = await sendExtensionRequest(page, { version: 1, type: "get_snapshot" });
+  check(restored.ok && restored.snapshot?.worker.sessionRestoredFromStorage === true, "Worker restart restores the same authenticated session from storage");
+  const restartedIdentity = await storedSessionIdentity(page);
+  check(restartedIdentity === authenticatedIdentity, "Worker restart restores the same authenticated identity");
+  await clickButton(page, "Sign out");
+  await page.waitForFunction(() => document.body.innerText.includes("You’re signed out"));
+  check(true, "Sign-out clears the session and returns a signed-out result");
+
+  const reauthEmail = `smoke-reauth-${Date.now()}@example.test`;
+  const reauthRequest = await sendExtensionRequest(page, {
+    version: 1,
+    type: "request_email_otp",
+    email: reauthEmail,
+  });
+  check(reauthRequest.ok && reauthRequest.auth?.status === "code_sent", "A fresh sign-in request remains generic after sign-out");
+  const reauthCode = await waitForOtp(reauthEmail);
+  const reauth = await sendExtensionRequest(page, {
+    version: 1,
+    type: "verify_email_otp",
+    email: reauthEmail,
+    token: reauthCode,
+  });
+  check(reauth.ok && reauth.snapshot?.kind !== "signed_out", "A fresh code establishes the authenticated session");
+  const sessionPrepared = await page.evaluate(async () => {
+    const values = await chrome.storage.local.get(null);
+    const key = Object.keys(values).find((candidate) => candidate.includes("supabase") && candidate.includes("auth-token"));
+    if (!key || typeof values[key] !== "string") return false;
+    const stored = JSON.parse(values[key]);
+    stored.expires_at = Math.floor(Date.now() / 1_000) - 1;
+    stored.refresh_token = "invalid-refresh-token";
+    await chrome.storage.local.set({ [key]: JSON.stringify(stored) });
+    return true;
+  });
+  check(sessionPrepared, "Acceptance fixture can expire the persisted session without exposing it");
+  await terminateWorker(page, extensionId);
+  await page.close();
+  page = await openPopup(extensionId);
+  check((await page.evaluate(() => document.body.innerText.includes("You’re signed out"))), "Authoritative refresh rejection returns to sign-in");
+  execFileSync("docker", ["kill", "supabase_kong_larp-code"], { stdio: "ignore" });
+  try {
+    const unavailable = await sendExtensionRequest(page, { version: 1, type: "get_snapshot" });
+    check(!unavailable.ok && unavailable.error?.code === "connection_unavailable", "Backend outage is shown as connection unavailable");
+  } finally {
+    execFileSync("docker", ["start", "supabase_kong_larp-code"], { stdio: "ignore" });
+  }
   await page.close();
   console.log("Smoke OK: popup close/open and service-worker terminate/restart passed.");
 } finally {

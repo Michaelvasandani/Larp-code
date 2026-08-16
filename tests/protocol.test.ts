@@ -48,4 +48,45 @@ describe("versioned popup/worker protocol", () => {
     ).toBe(true);
     expect(isPopupResponse({ ok: false, error: "not typed" })).toBe(false);
   });
+
+  it("accepts the email OTP request and verification messages", () => {
+    expect(isPopupRequest({
+      version: PROTOCOL_VERSION,
+      type: "request_email_otp",
+      email: "member@example.test",
+    })).toBe(true);
+    expect(isPopupRequest({
+      version: PROTOCOL_VERSION,
+      type: "verify_email_otp",
+      email: "member@example.test",
+      token: "123456",
+    })).toBe(true);
+    expect(isPopupRequest({
+      version: PROTOCOL_VERSION,
+      type: "resend_email_otp",
+      email: "member@example.test",
+    })).toBe(true);
+    expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "sign_out" })).toBe(true);
+  });
+
+  it("accepts distinct, credential-free sign-in states", () => {
+    for (const status of [
+      "ready",
+      "requesting_code",
+      "code_sent",
+      "resend_cooldown",
+      "verifying",
+      "invalid_code",
+      "expired_code",
+      "rate_limited",
+      "service_unavailable",
+    ] as const) {
+      expect(isPopupResponse({ ok: true, auth: { status } })).toBe(true);
+    }
+    expect(isPopupResponse({
+      ok: true,
+      auth: { status: "code_sent", resendAvailableAt: "2026-08-15T00:00:30.000Z" },
+    })).toBe(true);
+    expect(isPopupResponse({ ok: true, auth: { status: "invalid_code", token: "123456" } })).toBe(false);
+  });
 });

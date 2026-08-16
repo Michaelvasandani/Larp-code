@@ -1,8 +1,9 @@
 # larp-code
 
-Ticket 19 establishes the packaged foundation for the popup-only Manifest V3
-extension. The popup is React/TypeScript/Vite, while the event-driven service
-worker is the only owner of Supabase, extension storage, and popup messaging.
+Ticket 20 adds callback-free six-digit email OTP sign-in to the packaged
+popup-only Manifest V3 extension. The popup is React/TypeScript/Vite, while the
+event-driven service worker is the only owner of Supabase, extension storage,
+the authenticated session, and popup messaging.
 
 ## Local development
 
@@ -39,6 +40,10 @@ pnpm build
 pnpm package:check
 ```
 
-The foundation intentionally does not implement OTP, Member setup, Challenge
-domain commands, or Pet behavior. Those later tickets consume the versioned
-`src/shared/protocol.ts` discriminants and worker seam.
+The worker persists Supabase's session through asynchronous
+`chrome.storage.local`, enforces a worker-owned OTP resend cooldown, makes one
+normal refresh attempt for expired credentials, and clears Member state on
+sign-out. The popup never receives or stores a session token. Packaged smoke
+acceptance exercises sign-in, wrong/expired-code handling, cooldown, rate
+limits, worker restart, refresh rejection, backend unavailability, and
+sign-out against the versioned `src/shared/protocol.ts` seam.

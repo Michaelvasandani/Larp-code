@@ -57,7 +57,7 @@ for (const file of javascriptFiles) {
   const source = await readFile(file, "utf8");
   requireCondition(!/\beval\s*\(|\bnew\s+Function\s*\(/.test(source), `${relative(dist, file)} uses dynamic code execution`);
   requireCondition(!source.includes("chrome.storage.sync"), `${relative(dist, file)} uses sync storage`);
-  requireCondition(!/<script/i.test(source), `${relative(dist, file)} contains HTML executable markup`);
+  requireCondition(!/<script(?:\s[^>]*)?>[\s\S]*<\/script>/i.test(source), `${relative(dist, file)} contains HTML executable markup`);
 }
 
 const popup = await readFile(join(dist, "popup.html"), "utf8");

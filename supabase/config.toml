@@ -54,7 +54,3 @@ otp_expiry = 3600
 [auth.email.template.confirmation]
 subject = "Your larp-code sign-in code"
 content_path = "./supabase/templates/otp.html"
-
-[auth.email.template.magic_link]
-subject = "Your larp-code sign-in code"
-content_path = "./supabase/templates/otp.html"

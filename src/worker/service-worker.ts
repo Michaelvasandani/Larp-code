@@ -9,6 +9,11 @@ import {
   type ProtocolError,
   type WorkerEvidence,
 } from "../shared/protocol";
+import {
+  createAuthSessionAdapter,
+  type AuthApi,
+  type MemberStorage,
+} from "./auth-session";
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
@@ -19,30 +24,59 @@ type FoundationHealth = {
   serverTime: string;
 };
 
-const extensionStorage = {
-  async getItem(key: string): Promise<string | null> {
-    const values = await chrome.storage.local.get(`${SESSION_STORAGE_PREFIX}${key}`);
-    const value = values[`${SESSION_STORAGE_PREFIX}${key}`];
-    return typeof value === "string" ? value : null;
-  },
-  async setItem(key: string, value: string): Promise<void> {
-    await chrome.storage.local.set({ [`${SESSION_STORAGE_PREFIX}${key}`]: value });
-  },
-  async removeItem(key: string): Promise<void> {
-    await chrome.storage.local.remove(`${SESSION_STORAGE_PREFIX}${key}`);
-  },
-};
+function createPrefixedStorage(prefix: string) {
+  const storageKey = (key: string) => `${prefix}${key}`;
+  return {
+    async getItem(key: string): Promise<string | null> {
+      const values = await chrome.storage.local.get(storageKey(key));
+      const value = values[storageKey(key)];
+      return typeof value === "string" ? value : null;
+    },
+    async setItem(key: string, value: string): Promise<void> {
+      await chrome.storage.local.set({ [storageKey(key)]: value });
+    },
+    async removeItem(key: string): Promise<void> {
+      await chrome.storage.local.remove(storageKey(key));
+    },
+    async get(key: string): Promise<unknown> {
+      const values = await chrome.storage.local.get(storageKey(key));
+      return values[storageKey(key)] ?? null;
+    },
+    async set(key: string, value: unknown): Promise<void> {
+      await chrome.storage.local.set({ [storageKey(key)]: value });
+    },
+    async remove(key: string): Promise<void> {
+      await chrome.storage.local.remove(storageKey(key));
+    },
+    async clear(): Promise<void> {
+      const values = await chrome.storage.local.get(null);
+      await chrome.storage.local.remove(
+        Object.keys(values).filter((key) => key.startsWith(prefix)),
+      );
+    },
+  };
+}
+
+const extensionStorage = createPrefixedStorage(SESSION_STORAGE_PREFIX);
+const memberStorage: MemberStorage = extensionStorage;
 
 const client: SupabaseClient = createClient(__SUPABASE_URL__, __SUPABASE_ANON_KEY__, {
   auth: {
-    autoRefreshToken: true,
+    // The adapter owns the single explicit refresh attempt for each snapshot.
+    autoRefreshToken: false,
     detectSessionInUrl: false,
     persistSession: true,
     storage: extensionStorage,
   },
 });
 
+const authSessionAdapter = createAuthSessionAdapter({
+  auth: client.auth as unknown as AuthApi,
+  storage: memberStorage,
+});
 const bootId = crypto.randomUUID();
+const initialSessionStatePromise = authSessionAdapter.restoreSession();
+let pendingSnapshotSession: typeof initialSessionStatePromise | undefined = initialSessionStatePromise;
 const workerEvidencePromise = initializeWorkerEvidence();
 const popupPorts = new Set<chrome.runtime.Port>();
 
@@ -51,11 +85,11 @@ async function initializeWorkerEvidence(): Promise<WorkerEvidence> {
   const previous = typeof stored[BOOT_COUNT_KEY] === "number" ? stored[BOOT_COUNT_KEY] : 0;
   const bootCount = previous + 1;
   await chrome.storage.local.set({ [BOOT_COUNT_KEY]: bootCount });
-  const { data } = await client.auth.getSession();
+  const restored = await initialSessionStatePromise;
   return {
     bootId,
     bootCount,
-    sessionRestoredFromStorage: Boolean(data.session),
+    sessionRestoredFromStorage: restored.status === "authenticated",
   };
 }
 
@@ -70,8 +104,16 @@ function isFoundationHealth(value: unknown): value is FoundationHealth {
 }
 
 async function readFoundationHealth(): Promise<FoundationHealth> {
-  const { data, error } = await client.rpc("foundation_health_v1");
-  if (error) throw error;
+  let data: unknown;
+  let error: unknown;
+  try {
+    const response = await client.rpc("foundation_health_v1");
+    data = response.data;
+    error = response.error;
+  } catch {
+    throw new Error("The backend connection is unavailable.");
+  }
+  if (error) throw new Error("The backend connection is unavailable.");
   if (!isFoundationHealth(data)) throw new Error("The backend returned an invalid foundation health response.");
   return data;
 }
@@ -92,11 +134,16 @@ function snapshotMetadata(health: FoundationHealth, worker: WorkerEvidence) {
 }
 
 async function getAppSnapshot(): Promise<AppSnapshot> {
-  const [health, worker] = await Promise.all([readFoundationHealth(), workerEvidencePromise]);
-  const { data, error } = await client.auth.getSession();
-  if (error) throw error;
+  const sessionStatePromise = pendingSnapshotSession ?? authSessionAdapter.restoreSession();
+  pendingSnapshotSession = undefined;
+  const [health, worker, sessionState] = await Promise.all([
+    readFoundationHealth(),
+    workerEvidencePromise,
+    sessionStatePromise,
+  ]);
+  if (sessionState.status === "service_unavailable") throw new Error("The authentication connection is unavailable.");
   const metadata = snapshotMetadata(health, worker);
-  return data.session
+  return sessionState.status === "authenticated"
     ? { ...metadata, kind: "setup_required" }
     : { ...metadata, kind: "signed_out" };
 }
@@ -107,7 +154,7 @@ function diagnosticId(): string {
 
 function toProtocolError(error: unknown): ProtocolError {
   const message = error instanceof Error ? error.message : String(error);
-  const isConnectionError = /fetch|network|connect|supabase|failed to reach|unavailable/i.test(message);
+  const isConnectionError = /fetch|network|connect|supabase|failed to reach|unavailable|socket|refused|reset|aborted|json/i.test(message);
   return {
     code: isConnectionError ? "connection_unavailable" : "internal",
     message: isConnectionError ? "The larp-code connection is unavailable." : "The foundation could not load current state.",
@@ -115,9 +162,32 @@ function toProtocolError(error: unknown): ProtocolError {
   };
 }
 
-async function handleRequest(_request: PopupRequest): Promise<PopupResponse> {
+async function responseWithAuth(auth: NonNullable<Extract<PopupResponse, { ok: true }>['auth']>): Promise<PopupResponse> {
+  return { ok: true, auth };
+}
+
+async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
   try {
-    return { ok: true, snapshot: await getAppSnapshot() };
+    switch (request.type) {
+      case "get_snapshot":
+        return { ok: true, snapshot: await getAppSnapshot() };
+      case "request_email_otp":
+      case "resend_email_otp":
+        return responseWithAuth(await authSessionAdapter.requestEmailOtp(request.email));
+      case "verify_email_otp": {
+        const result = await authSessionAdapter.verifyEmailOtp(request.email, request.token);
+        if (result.status === "authenticated") return { ok: true, snapshot: await getAppSnapshot() };
+        return responseWithAuth(result);
+      }
+      case "sign_out": {
+        await authSessionAdapter.signOut();
+        try {
+          return { ok: true, snapshot: await getAppSnapshot(), auth: { status: "ready" } };
+        } catch {
+          return responseWithAuth({ status: "ready" });
+        }
+      }
+    }
   } catch (error) {
     return { ok: false, error: toProtocolError(error) };
   }

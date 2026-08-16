@@ -84,6 +84,31 @@ p {
 
 .state-card p:last-of-type { margin-bottom: 20px; }
 
+label {
+  display: block;
+  margin-bottom: 7px;
+  color: #39473b;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+input {
+  display: block;
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 11px 12px;
+  border: 1px solid #c8c6bb;
+  border-radius: 10px;
+  background: #fff;
+  color: #243027;
+  font: inherit;
+}
+
+input:focus {
+  border-color: #2e5a3a;
+  outline: 3px solid rgb(46 90 58 / 18%);
+}
+
 .primary-button,
 .text-button {
   display: block;
@@ -91,6 +116,13 @@ p {
   border-radius: 10px;
   cursor: pointer;
   font-weight: 750;
+}
+
+.auth-status {
+  min-height: 42px;
+  margin: 14px 0 0;
+  color: #5d665e;
+  font-size: 12px;
 }
 
 .primary-button {
