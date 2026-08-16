@@ -10,6 +10,51 @@ export const PROTOCOL_VERSION = 1 as const;
 
 export type ProtocolVersion = typeof PROTOCOL_VERSION;
 
+/** Domain commands have their own version so command rollout can evolve independently. */
+export const TRANSACTION_COMMAND_VERSION = 1 as const;
+export type TransactionCommandVersion = typeof TRANSACTION_COMMAND_VERSION;
+export type TransactionCommandKind = "update_display_name";
+
+export type PendingCommand = {
+  version: TransactionCommandVersion;
+  kind: TransactionCommandKind;
+  idempotencyKey: string;
+  memberId: string;
+  memberEmail: string;
+  intent: { displayName: string };
+  requestedAt: string;
+};
+
+export type CommandOutcome =
+  | {
+      status: "applied";
+      kind: TransactionCommandKind;
+      idempotencyKey: string;
+    }
+  | {
+      status: "rejected";
+      kind: TransactionCommandKind;
+      code: "unauthorized" | "validation";
+      message: string;
+    }
+  | {
+      status: "uncertain";
+      kind: TransactionCommandKind;
+      idempotencyKey: string;
+      message: "Checking whether this completed.";
+    };
+
+export type UncertainCommandOutcome = Extract<CommandOutcome, { status: "uncertain" }>;
+
+export function createUncertainCommandOutcome(idempotencyKey: string): UncertainCommandOutcome {
+  return {
+    status: "uncertain",
+    kind: "update_display_name",
+    idempotencyKey,
+    message: "Checking whether this completed.",
+  };
+}
+
 export type WorkerEvidence = {
   bootId: string;
   bootCount: number;
@@ -37,6 +82,8 @@ type SnapshotMetadata = {
   compatibility: CompatibilityMetadata;
   backend: BackendHealth;
   worker: WorkerEvidence;
+  /** The one locally persisted command, when recovery is still required. */
+  pendingCommand?: PendingCommand | null;
 };
 
 export type SignedOutSnapshot = SnapshotMetadata & {
@@ -134,6 +181,11 @@ export type PopupRequest =
     }
   | {
       version: ProtocolVersion;
+      type: "update_display_name";
+      displayName: string;
+    }
+  | {
+      version: ProtocolVersion;
       type: "sign_out";
     };
 
@@ -151,8 +203,7 @@ export type ProtocolError = {
 };
 
 export type PopupResponse =
-  | { ok: true; snapshot: AppSnapshot; auth?: SignInState }
-  | { ok: true; auth: SignInState; snapshot?: AppSnapshot }
+  | { ok: true; snapshot?: AppSnapshot; auth?: SignInState; command?: CommandOutcome }
   | { ok: false; error: ProtocolError };
 
 export type WorkerEvent =
@@ -178,6 +229,40 @@ function isWorkerEvidence(value: unknown): value is WorkerEvidence {
     && typeof value.sessionRestoredFromStorage === "boolean";
 }
 
+export function isPendingCommand(value: unknown): value is PendingCommand {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "version",
+    "kind",
+    "idempotencyKey",
+    "memberId",
+    "memberEmail",
+    "intent",
+    "requestedAt",
+  ])) return false;
+  if (value.version !== TRANSACTION_COMMAND_VERSION || value.kind !== "update_display_name"
+    || !isString(value.idempotencyKey) || !isString(value.memberId)
+    || !isString(value.memberEmail) || !isString(value.requestedAt)) return false;
+  return isRecord(value.intent)
+    && hasExactKeys(value.intent, ["displayName"])
+    && typeof value.intent.displayName === "string";
+}
+
+export function isCommandOutcome(value: unknown): value is CommandOutcome {
+  if (!isRecord(value) || typeof value.status !== "string" || value.kind !== "update_display_name") return false;
+  if (value.status === "applied") {
+    return hasExactKeys(value, ["status", "kind", "idempotencyKey"]) && isString(value.idempotencyKey);
+  }
+  if (value.status === "uncertain") {
+    return hasExactKeys(value, ["status", "kind", "idempotencyKey", "message"])
+      && isString(value.idempotencyKey)
+      && value.message === "Checking whether this completed.";
+  }
+  return value.status === "rejected"
+    && hasExactKeys(value, ["status", "kind", "code", "message"])
+    && (value.code === "unauthorized" || value.code === "validation")
+    && isString(value.message);
+}
+
 function isSnapshot(value: unknown): value is AppSnapshot {
   if (!isRecord(value)) return false;
   const keys = [
@@ -191,7 +276,10 @@ function isSnapshot(value: unknown): value is AppSnapshot {
   ] as const;
   if (!hasExactKeys(value, keys)
     && !hasExactKeys(value, [...keys, "email"])
-    && !hasExactKeys(value, [...keys, "account"])) return false;
+    && !hasExactKeys(value, [...keys, "account"])
+    && !hasExactKeys(value, [...keys, "pendingCommand"])
+    && !hasExactKeys(value, [...keys, "email", "pendingCommand"])
+    && !hasExactKeys(value, [...keys, "account", "pendingCommand"])) return false;
   if (value.contractVersion !== PROTOCOL_VERSION || !isString(value.authoritativeServerTime) || !isWorkerEvidence(value.worker)) {
     return false;
   }
@@ -201,10 +289,13 @@ function isSnapshot(value: unknown): value is AppSnapshot {
     || !isString(value.compatibility.minimumClientVersion)) return false;
   if (!isRecord(value.backend) || !hasExactKeys(value.backend, ["status", "schemaVersion"])
     || value.backend.status !== "reachable" || typeof value.backend.schemaVersion !== "number") return false;
-  if (value.kind === "setup_required") return hasExactKeys(value, [...keys, "email"]) && isString(value.email);
-  if (value.kind === "account") return hasExactKeys(value, [...keys, "account"]) && isMemberAccount(value.account);
+  if ("pendingCommand" in value && value.pendingCommand !== null && !isPendingCommand(value.pendingCommand)) return false;
+  const hasOptionalPending = (required: readonly string[]) =>
+    hasExactKeys(value, required) || hasExactKeys(value, [...required, "pendingCommand"]);
+  if (value.kind === "setup_required") return hasOptionalPending([...keys, "email"]) && isString(value.email);
+  if (value.kind === "account") return hasOptionalPending([...keys, "account"]) && isMemberAccount(value.account);
   return ["signed_out", "invitation", "scheduled", "active", "terminal"].includes(String(value.kind))
-    && hasExactKeys(value, keys);
+    && hasOptionalPending(keys);
 }
 
 export function isPopupRequest(value: unknown): value is PopupRequest {
@@ -220,6 +311,9 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
       && typeof value.displayName === "string"
       && typeof value.adultConfirmed === "boolean"
       && typeof value.consentAccepted === "boolean";
+  }
+  if (value.type === "update_display_name") {
+    return hasExactKeys(value, ["version", "type", "displayName"]) && typeof value.displayName === "string";
   }
   return value.type === "verify_email_otp"
     && hasExactKeys(value, ["version", "type", "email", "token"])
@@ -247,15 +341,20 @@ export function isPopupResponse(value: unknown): value is PopupResponse {
   if (value.ok) {
     const hasSnapshot = value.snapshot !== undefined;
     const hasAuth = value.auth !== undefined;
-    if (!hasSnapshot && !hasAuth) return false;
+    const hasCommand = value.command !== undefined;
+    if (!hasSnapshot && !hasAuth && !hasCommand) return false;
     if (hasSnapshot && !isSnapshot(value.snapshot)) return false;
     if (hasAuth && !isSignInState(value.auth)) return false;
+    if ("command" in value && !isCommandOutcome(value.command)) return false;
     const expectedKeys = hasSnapshot && hasAuth
       ? ["ok", "snapshot", "auth"]
       : hasSnapshot
         ? ["ok", "snapshot"]
-        : ["ok", "auth"];
-    return hasExactKeys(value, expectedKeys);
+        : hasAuth
+          ? ["ok", "auth"]
+          : ["ok", "command"];
+    const expectedWithCommand = hasSnapshot ? [...expectedKeys, "command"] : expectedKeys;
+    return hasExactKeys(value, expectedKeys) || hasExactKeys(value, expectedWithCommand);
   }
   if (!hasExactKeys(value, ["ok", "error"]) || !isRecord(value.error)) return false;
   if (!hasExactKeys(value.error, ["code", "message"]) && !hasExactKeys(value.error, ["code", "message", "diagnosticId"])) return false;

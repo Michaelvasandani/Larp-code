@@ -3,8 +3,10 @@ import { useCallback, useEffect, useState } from "react";
 import {
   isPopupResponse,
   PROTOCOL_VERSION,
+  createUncertainCommandOutcome,
   SIGN_IN_STATUS_METADATA,
   type AppSnapshot,
+  type CommandOutcome,
   type PopupRequest,
   type PopupResponse,
   type SignInState,
@@ -303,10 +305,33 @@ function SetupRequired({
 function MemberAccountView({
   snapshot,
   onSignOut,
+  onUpdate,
+  onRetry,
+  commandOutcome,
 }: {
   snapshot: Extract<AppSnapshot, { kind: "account" }>;
   onSignOut: () => Promise<void>;
+  onUpdate: (request: PopupRequest) => Promise<void>;
+  onRetry: () => void;
+  commandOutcome?: CommandOutcome;
 }) {
+  const [displayName, setDisplayName] = useState(snapshot.account.displayName);
+  const [isSubmitting, setSubmitting] = useState(false);
+
+  useEffect(() => setDisplayName(snapshot.account.displayName), [snapshot.account.displayName]);
+
+  const pending = Boolean(snapshot.pendingCommand) || commandOutcome?.status === "uncertain";
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending || !displayName.trim()) return;
+    setSubmitting(true);
+    try {
+      await onUpdate({ version: PROTOCOL_VERSION, type: "update_display_name", displayName });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <section className="state-card" aria-labelledby="account-title">
       <p className="eyebrow">MEMBER ACCOUNT</p>
@@ -321,6 +346,31 @@ function MemberAccountView({
           <dd>{snapshot.account.email}</dd>
         </div>
       </dl>
+      <form onSubmit={submit} aria-describedby="display-name-edit-status">
+        <label htmlFor="member-display-name-edit">Edit display name</label>
+        <input
+          id="member-display-name-edit"
+          type="text"
+          autoComplete="nickname"
+          maxLength={DISPLAY_NAME_MAX_LENGTH}
+          value={displayName}
+          onChange={(event) => setDisplayName(stripDisplayNameControlCharacters(event.target.value))}
+          required
+          disabled={pending || isSubmitting}
+        />
+        <button type="submit" className="primary-button" disabled={pending || isSubmitting || !displayName.trim()}>
+          {isSubmitting ? "Saving display name…" : "Save display name"}
+        </button>
+        {commandOutcome?.status === "rejected" && (
+          <p id="display-name-edit-status" className="auth-status error-status" role="alert">{commandOutcome.message}</p>
+        )}
+        {pending && (
+          <p id="display-name-edit-status" className="auth-status" role="status" aria-live="polite">
+            Checking whether this completed. Your display name will update when the worker receives the stored result.
+            <button type="button" className="text-button" onClick={onRetry}>Check again</button>
+          </p>
+        )}
+      </form>
       <p>Your email remains your sole sign-in and recovery authority.</p>
       <a className="text-button policy-link" href="privacy.html" target="_blank" rel="noreferrer">
         Read the public privacy policy
@@ -337,6 +387,7 @@ export function App() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [authState, setAuthState] = useState<SignInState>(defaultSignInState);
   const [setupError, setSetupError] = useState<string | undefined>();
+  const [commandOutcome, setCommandOutcome] = useState<CommandOutcome | undefined>();
 
   const loadSnapshot = useCallback(() => {
     setState({ status: "loading" });
@@ -344,6 +395,9 @@ export function App() {
       .then((snapshot) => {
         setAuthState(defaultSignInState);
         setSetupError(undefined);
+        setCommandOutcome(snapshot.pendingCommand
+          ? createUncertainCommandOutcome(snapshot.pendingCommand.idempotencyKey)
+          : undefined);
         setState({ status: "loaded", snapshot });
       })
       .catch((error: unknown) => {
@@ -360,6 +414,7 @@ export function App() {
       setAuthState({ status: "requesting_code" });
     }
     if (request.type === "create_member_account") setSetupError(undefined);
+    if (request.type === "update_display_name") setCommandOutcome(undefined);
     try {
       const response = await sendRequest(request);
       if (!response.ok) {
@@ -368,8 +423,13 @@ export function App() {
         return;
       }
       if (response.auth) setAuthState(response.auth);
+      if ("command" in response && response.command && !response.snapshot) {
+        setCommandOutcome(response.command);
+      }
       if (response.snapshot) {
         setState({ status: "loaded", snapshot: response.snapshot });
+        if ("command" in response && response.command) setCommandOutcome(response.command);
+        else if (!response.snapshot.pendingCommand) setCommandOutcome(undefined);
         if (response.snapshot.kind === "signed_out") setAuthState(defaultSignInState);
       } else if (request.type === "sign_out") {
         setState((current) => current.status === "loaded"
@@ -384,6 +444,17 @@ export function App() {
           : current);
       }
     } catch {
+      if (request.type === "update_display_name") {
+        setCommandOutcome(createUncertainCommandOutcome("pending-recovery"));
+        void requestSnapshot().then((snapshot) => {
+          setState({ status: "loaded", snapshot });
+          if (snapshot.pendingCommand) {
+            setCommandOutcome(createUncertainCommandOutcome(snapshot.pendingCommand.idempotencyKey));
+          } else {
+            setCommandOutcome(undefined);
+          }
+        }).catch(() => undefined);
+      }
       setAuthState({ status: "service_unavailable" });
       if (request.type === "create_member_account") setSetupError("The larp-code connection is unavailable.");
     }
@@ -438,7 +509,13 @@ export function App() {
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "account" && (
-        <MemberAccountView snapshot={state.snapshot} onSignOut={signOut} />
+        <MemberAccountView
+          snapshot={state.snapshot}
+          onSignOut={signOut}
+          onUpdate={sendAuthAction}
+          onRetry={loadSnapshot}
+          commandOutcome={commandOutcome}
+        />
       )}
 
       {state.status === "loaded"

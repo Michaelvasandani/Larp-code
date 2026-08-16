@@ -1,6 +1,6 @@
 /* global chrome */
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -133,6 +133,26 @@ async function readOwnAccountRpc(page) {
   }, { apiUrl: backendUrl, anonKey: backendAnonKey, token: accessToken });
 }
 
+async function invokeDisplayNameCommandRpc(page, { idempotencyKey, memberId, memberEmail, displayName }) {
+  const accessToken = await storedAccessToken(page);
+  if (!accessToken) throw new Error("The acceptance session did not contain an access token.");
+  return page.evaluate(async ({ apiUrl, anonKey, token, idempotencyKey: key, memberId: id, memberEmail: address, displayName: name }) => {
+    const response = await fetch(`${apiUrl}/rest/v1/rpc/update_member_display_name_v1`, {
+      method: "POST",
+      headers: { apikey: anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_idempotency_key: key,
+        p_command_version: 1,
+        p_command_kind: "update_display_name",
+        p_member_id: id,
+        p_member_email: address,
+        p_display_name: name,
+      }),
+    });
+    return { status: response.status, body: await response.json() };
+  }, { apiUrl: backendUrl, anonKey: backendAnonKey, token: accessToken, idempotencyKey, memberId, memberEmail, displayName });
+}
+
 async function readMemberTableDirectly(page) {
   const accessToken = await storedAccessToken(page);
   if (!accessToken) throw new Error("The acceptance session did not contain an access token.");
@@ -155,6 +175,34 @@ async function terminateWorker(page, extensionId) {
   if (!target) throw new Error("Actual extension service worker target was not found.");
   await session.send("Target.closeTarget", { targetId: target.targetId });
   await session.detach();
+}
+
+async function lockMemberAccountRow(memberId) {
+  const dbUrl = process.env.DB_URL ?? localBackendValue("DB_URL");
+  if (!dbUrl) throw new Error("The local database URL is required for interruption acceptance.");
+  const psql = spawn("psql", [dbUrl, "-v", "ON_ERROR_STOP=1", "-At"], {
+    stdio: ["pipe", "pipe", "inherit"],
+  });
+  const locked = new Promise((resolve, reject) => {
+    let output = "";
+    psql.stdout.on("data", (chunk) => {
+      output += String(chunk);
+      if (output.includes("LOCKED")) resolve();
+    });
+    psql.once("error", reject);
+    psql.once("exit", (code) => {
+      if (code !== null && code !== 0) reject(new Error(`Lock fixture exited with status ${code}.`));
+    });
+  });
+  psql.stdin.write("begin;\n");
+  psql.stdin.write(`select id from public.member_accounts where id = '${memberId}' for update;\n`);
+  psql.stdin.write("select 'LOCKED';\n");
+  await locked;
+  return async () => {
+    psql.stdin.write("rollback;\n");
+    psql.stdin.end();
+    await new Promise((resolve) => psql.once("exit", resolve));
+  };
 }
 
 try {
@@ -265,6 +313,91 @@ try {
   ]);
   check(duplicateSetups.every((response) => response.ok && response.snapshot?.kind === "account"), "Duplicate setup submissions return an existing account snapshot");
   check(duplicateSetups.every((response) => response.ok && response.snapshot?.account?.displayName === "<img src=x onerror=alert(1)>"), "Duplicate setup submissions do not overwrite consent or profile state");
+  const renamed = await sendExtensionRequest(page, {
+    version: 1,
+    type: "update_display_name",
+    displayName: "Ada Recovered",
+  });
+  check(renamed.ok && renamed.command?.status === "applied" && renamed.snapshot?.account?.displayName === "Ada Recovered", "Display-name editing uses the versioned transactional command");
+  check(renamed.ok && renamed.snapshot?.pendingCommand === null, "Successful display-name command clears local pending intent after the stored result");
+  const commandMemberId = await storedSessionIdentity(page);
+  check(typeof commandMemberId === "string" && renamed.ok && renamed.command?.status === "applied", "Acceptance captures the command's account-bound identity and key");
+  const replayed = await invokeDisplayNameCommandRpc(page, {
+    idempotencyKey: renamed.command.idempotencyKey,
+    memberId: commandMemberId,
+    memberEmail: email,
+    displayName: "Must not overwrite stored result",
+  });
+  check(replayed.status === 200 && replayed.body?.displayName === "Ada Recovered", "Reusing the same key returns the stored response without applying again");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const changedRevision = await sendExtensionRequest(page, { version: 1, type: "get_snapshot" });
+  const revisionChanged = renamed.ok && changedRevision.ok
+    && renamed.snapshot?.freshness.revision !== changedRevision.snapshot?.freshness.revision;
+  const replayedAfterRevision = await invokeDisplayNameCommandRpc(page, {
+    idempotencyKey: renamed.command.idempotencyKey,
+    memberId: commandMemberId,
+    memberEmail: email,
+    displayName: "Must still not overwrite stored result",
+  });
+  check(revisionChanged && replayedAfterRevision.status === 200 && replayedAfterRevision.body?.displayName === "Ada Recovered", "Unrelated Snapshot revision changes do not reject or replay the command");
+  const rejectedRename = await sendExtensionRequest(page, {
+    version: 1,
+    type: "update_display_name",
+    displayName: "\u0000\n",
+  });
+  check(rejectedRename.ok && rejectedRename.command?.status === "rejected" && rejectedRename.command.code === "validation", "Known display-name validation failure is typed");
+  check(rejectedRename.ok && rejectedRename.snapshot?.account?.displayName === "Ada Recovered" && rejectedRename.snapshot?.pendingCommand === null, "Known display-name failure leaves no partial change and returns a fresh account Snapshot");
+  await page.evaluate(() => {
+    const input = document.querySelector("#member-display-name-edit");
+    if (!(input instanceof HTMLInputElement)) throw new Error("Display-name edit input not found");
+    input.focus();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, "Ada Popup");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await clickButton(page, "Save display name");
+  await page.waitForFunction(() => document.body.innerText.includes("Welcome, Ada Popup"), { timeout: 15_000 });
+  check(true, "Popup display-name editing returns to the authoritative account Snapshot");
+  await page.close();
+  page = await openPopup(extensionId);
+  check((await page.evaluate(() => document.body.innerText.includes("Welcome, Ada Popup"))), "Display-name result survives popup closure");
+  const releaseBeforeCommit = await lockMemberAccountRow(commandMemberId);
+  const popupClosedCommand = sendExtensionRequest(page, {
+    version: 1,
+    type: "update_display_name",
+    displayName: "Ada Before Commit",
+  }).catch(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await page.close();
+  await releaseBeforeCommit();
+  await popupClosedCommand;
+  page = await openPopup(extensionId);
+  await page.waitForFunction(() => document.body.innerText.includes("Welcome, Ada Before Commit"), { timeout: 15_000 });
+  check(true, "Popup closure before commit recovers one durable display-name update");
+  const releaseWorkerBeforeCommit = await lockMemberAccountRow(commandMemberId);
+  const workerTerminatedCommand = sendExtensionRequest(page, {
+    version: 1,
+    type: "update_display_name",
+    displayName: "Ada Worker Before Commit",
+  }).catch(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await terminateWorker(page, extensionId);
+  await releaseWorkerBeforeCommit();
+  await workerTerminatedCommand;
+  await page.close();
+  page = await openPopup(extensionId);
+  await page.waitForFunction(() => document.body.innerText.includes("Welcome, Ada Worker Before Commit"), { timeout: 15_000 });
+  check(true, "Actual worker termination before commit recovers one durable display-name update");
+  const afterCommitCommand = sendExtensionRequest(page, {
+    version: 1,
+    type: "update_display_name",
+    displayName: "Ada After Commit",
+  }).catch(() => undefined);
+  await page.close();
+  await afterCommitCommand;
+  page = await openPopup(extensionId);
+  await page.waitForFunction(() => document.body.innerText.includes("Welcome, Ada After Commit"), { timeout: 15_000 });
+  check(true, "Popup closure after commit but before response recovers one durable display-name update");
   check(true, "Packaged email OTP sign-in restores an authenticated Member Account snapshot");
   const expired = await sendExtensionRequest(page, {
     version: 1,

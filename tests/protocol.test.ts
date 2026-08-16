@@ -95,6 +95,40 @@ describe("versioned popup/worker protocol", () => {
       adultConfirmed: true,
       consentAccepted: true,
     })).toBe(true);
+    expect(isPopupRequest({
+      version: PROTOCOL_VERSION,
+      type: "update_display_name",
+      displayName: "Grace",
+    })).toBe(true);
+  });
+
+  it("accepts an account-bound pending command and typed command outcome", () => {
+    const pending = {
+      version: 1,
+      kind: "update_display_name",
+      idempotencyKey: "key-1",
+      memberId: "member-1",
+      memberEmail: "member@example.test",
+      intent: { displayName: "Grace" },
+      requestedAt: "2026-08-15T00:00:00.000Z",
+    };
+    const snapshot = { ...accountSnapshot, pendingCommand: pending };
+    expect(isPopupResponse({ ok: true, snapshot })).toBe(true);
+    expect(isPopupResponse({
+      ok: true,
+      snapshot,
+      command: { status: "uncertain", kind: "update_display_name", idempotencyKey: "key-1", message: "Checking whether this completed." },
+    })).toBe(true);
+    expect(isPopupResponse({
+      ok: true,
+      snapshot,
+      command: { status: "rejected", kind: "update_display_name", code: "validation", message: "Display name is required." },
+    })).toBe(true);
+    expect(isPopupResponse({
+      ok: true,
+      command: { status: "uncertain", kind: "update_display_name", idempotencyKey: "key-1", message: "Checking whether this completed." },
+    })).toBe(true);
+    expect(isPopupRequest({ version: PROTOCOL_VERSION, type: "update_display_name", displayName: "Grace", extra: true })).toBe(false);
   });
 
   it("rejects incomplete account setup requests", () => {

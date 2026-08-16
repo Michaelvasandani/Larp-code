@@ -43,7 +43,11 @@ pnpm package:check
 The worker persists Supabase's session through asynchronous
 `chrome.storage.local`, enforces a worker-owned OTP resend cooldown, makes one
 normal refresh attempt for expired credentials, and clears Member state on
-sign-out. The popup never receives or stores a session token. Packaged smoke
-acceptance exercises sign-in, wrong/expired-code handling, cooldown, rate
-limits, worker restart, refresh rejection, backend unavailability, and
+sign-out. Display-name edits use the versioned transactional command seam: an
+account-bound idempotency envelope is persisted before the RPC and retained
+until its stored result is received, so popup closure and worker termination
+recover without duplicate updates. The popup never receives or stores a
+session token. Packaged smoke acceptance exercises sign-in, wrong/expired-code
+handling, cooldown, rate limits, display-name editing, popup/worker command
+interruption, worker restart, refresh rejection, backend unavailability, and
 sign-out against the versioned `src/shared/protocol.ts` seam.
