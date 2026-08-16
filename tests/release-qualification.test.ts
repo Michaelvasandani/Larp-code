@@ -169,6 +169,11 @@ describe("Ticket 41 release qualification", () => {
     const tokenResult = auditQualificationRecord(tokenRecord, { root });
     expect(tokenResult.blockers).toContain("record.notes[3] contains prohibited sensitive material");
 
+    const shortTokenRecord = pendingRecord();
+    shortTokenRecord.notes.push("token: abc123");
+    const shortTokenResult = auditQualificationRecord(shortTokenRecord, { root });
+    expect(shortTokenResult.blockers).toContain("record.notes[3] contains prohibited sensitive material");
+
     const memberRecord = pendingRecord();
     memberRecord.ownerResidualRisk.scope = "memberData: member-123";
     const memberResult = auditQualificationRecord(memberRecord, { root });

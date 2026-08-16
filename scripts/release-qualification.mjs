@@ -217,7 +217,7 @@ function checkNoSecrets(value, path = "record", blockers = []) {
       /(?:^|[^a-z])eyJ[a-z0-9_-]{20,}/i,
       /postgres(?:ql)?:\/\//i,
       /(?:password|secret|credential|api[_ -]?key)\s*[:=]\s*[^\s,}]+/i,
-      /\b(?:opaque|bearer|access|refresh)[\s_-]*token\b\s*[:=]\s*[^\s,;}\]]+/i,
+      /\b(?:token|opaque|bearer|access|refresh)(?:[\s_-]*token)?\b\s*[:=]\s*[^\s,;}\]]+/i,
       /\b(?:member|user|account|profile|submission|solution|problem|phone|address|birth(?:date)?|dob|username|handle)(?:[\s_-]*(?:data|id|email|name|number))?\b\s*[:=]\s*[^\s,;}\]]+/i,
       /\bopaque\b/i,
       /\b(?:member|user|account|profile)[\s_-]+data\b/i,
