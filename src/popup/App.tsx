@@ -14,6 +14,7 @@ import {
 } from "../shared/protocol";
 import { DISPLAY_NAME_MAX_LENGTH, stripDisplayNameControlCharacters } from "../worker/member-account";
 import { PINNED_PROBLEM_SET_VERSION } from "../catalog/problem-set";
+import { preserveSignedOutAuthState } from "./auth-state";
 
 type LoadState =
   | { status: "loading" }
@@ -783,7 +784,7 @@ export function App() {
     setState((current) => current.status === "loaded" ? current : { status: "loading" });
     void requestSnapshot()
       .then((snapshot) => {
-        setAuthState(defaultSignInState);
+        setAuthState((current) => preserveSignedOutAuthState(current, snapshot.kind));
         setSetupError(undefined);
         setCommandOutcome(snapshot.pendingCommand
           ? createUncertainCommandOutcome(snapshot.pendingCommand.idempotencyKey, snapshot.pendingCommand.kind)
