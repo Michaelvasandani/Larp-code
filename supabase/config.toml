@@ -54,3 +54,7 @@ otp_expiry = 3600
 [auth.email.template.magic_link]
 subject = "Your larp-code sign-in code"
 content_path = "./supabase/templates/otp.html"
+
+# Authentication OTP and product notices are intentionally tracking-disabled.
+# Product lifecycle notices use TRANSACTIONAL_TRACKING=false in the function
+# deployment environment; the shared provider adapter rejects true.

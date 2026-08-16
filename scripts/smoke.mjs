@@ -496,7 +496,7 @@ try {
     deadlineDate: invitationDeadline,
   });
   check(duplicateOutgoing.status >= 400 && /pending outgoing/i.test(String(duplicateOutgoing.body?.message)), "Duplicate outgoing invitations are rejected without a second pending invitation");
-  const noticeState = runSql(`select delivered_at is null from public.transactional_notices where event_key = 'invitation:${invitationId}:created'`);
+  const noticeState = runSql(`select delivered_at is null from public.transactional_notices where source_event_key = 'invitation:${invitationId}:created'`);
   check(noticeState === "t", "Invitation creation enqueues one undelivered transactional notice for dispatch");
   check(runSql("select count(*) from public.problem_set_version_problems where problem_set_version_id = 'neetcode-150-2026-08-15'") === "150", "Reviewed catalog version has exactly 150 immutable records");
   check(sqlRejects("update public.problem_set_versions set created_at = created_at where id = 'neetcode-150-2026-08-15'"), "Database rejects every Problem Set Version update");

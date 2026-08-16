@@ -21,6 +21,13 @@ publishable key from `supabase status`. A production-style build can instead
 use `SUPABASE_URL` and `SUPABASE_ANON_KEY`; the generated manifest permits only
 that exact backend origin and its matching Realtime origin.
 
+Transactional Notices use the replaceable transport in
+`src/shared/transactional-notices.ts`. Local and automated tests capture the
+payload through Mailpit; production is intended to deliver through the
+configured Resend transactional-mail recipient. Product mail is sent without
+open/click tracking, and the outbox retains only routing facts and opaque
+record identifiers.
+
 ## Verification
 
 `pnpm verify` is the single baseline entrypoint. It starts and stops local

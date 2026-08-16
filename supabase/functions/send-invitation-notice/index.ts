@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { renderInvitationEmail } from "../../../src/shared/invitation-email.ts";
+import { createTransactionalMailTransport } from "../_shared/transactional-mail.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -28,7 +29,11 @@ Deno.serve(async (request) => {
   const serviceUrl = Deno.env.get("SUPABASE_URL");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const resendKey = Deno.env.get("RESEND_API_KEY");
-  if (!authorization || !serviceUrl || !serviceKey || !resendKey) return response({ error: "Notice delivery is unavailable." }, 503);
+  const transport = Deno.env.get("TRANSACTIONAL_MAIL_TRANSPORT") ?? "resend";
+  if (!authorization || !serviceUrl || !serviceKey || (transport !== "mailpit" && !resendKey)
+    || Deno.env.get("TRANSACTIONAL_TRACKING") === "true") {
+    return response({ error: "Notice delivery is unavailable." }, 503);
+  }
 
   const userClient = createClient(serviceUrl, Deno.env.get("SUPABASE_ANON_KEY") ?? serviceKey, {
     global: { headers: { Authorization: authorization } },
@@ -46,28 +51,29 @@ Deno.serve(async (request) => {
     .maybeSingle();
   if (!invitation || invitation.inviter_id !== userData.user.id) return response({ error: "Invitation is unavailable." }, 403);
 
-  const { data: notice } = await admin.from("transactional_notices")
-    .select("id,event_key,recipient_email,inviter_display_name")
-    .eq("event_key", `invitation:${body.invitationId}:created`)
-    .is("delivered_at", null)
-    .maybeSingle() as { data: InvitationNotice | null };
+  // Claiming happens before provider I/O. A timeout after provider acceptance
+  // therefore cannot cause a second product email on reconnect or retry.
+  const { data: notice } = await admin.rpc("claim_transactional_notice_v1", {
+    p_event_key: `invitation:${body.invitationId}:created`,
+  }) as { data: InvitationNotice | null };
   if (!notice) return response({ delivered: true });
 
   const email = renderInvitationEmail({
     inviterDisplayName: notice.inviter_display_name,
     invitationId: body.invitationId,
   });
-  const mail = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
+  try {
+    const providerMessageId = await createTransactionalMailTransport({
+      transport: transport as "mailpit" | "resend",
+      resendKey,
       from: Deno.env.get("INVITATION_FROM_EMAIL") ?? "larp-code <invite@auth.larp-code.example>",
-      to: [notice.recipient_email],
-      subject: email.subject,
-      text: email.text,
-    }),
-  });
-  if (!mail.ok) return response({ error: "Notice delivery is unavailable." }, 503);
-  await admin.from("transactional_notices").update({ delivered_at: new Date().toISOString() }).eq("id", notice.id).is("delivered_at", null);
+    }).send({ to: notice.recipient_email, subject: email.subject, text: email.text }, notice.event_key);
+    await admin.rpc("mark_transactional_notice_delivered_v1", {
+      p_notice_id: notice.id,
+      p_provider_message_id: providerMessageId,
+    });
+  } catch {
+    return response({ error: "Notice delivery is unavailable." }, 503);
+  }
   return response({ delivered: true });
 });
