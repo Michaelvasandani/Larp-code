@@ -567,34 +567,17 @@ $$;
 drop policy if exists challenge_members_realtime_read on public.challenge_members;
 create policy challenge_members_realtime_read
 on public.challenge_members for select to authenticated
-using (member_id = (select auth.uid()) and exists (
-  select 1 from public.challenges challenge_row
-   where challenge_row.id = challenge_members.challenge_id
-     and (challenge_row.retention_expires_at is null or challenge_row.retention_expires_at > clock_timestamp())
-));
+using (public.challenge_member_visible_v1(challenge_id, (select auth.uid())));
 
 drop policy if exists challenges_member_realtime_read on public.challenges;
 create policy challenges_member_realtime_read
 on public.challenges for select to authenticated
-using (
-  (retention_expires_at is null or retention_expires_at > clock_timestamp())
-  and exists (
-    select 1 from public.challenge_members member_row
-     where member_row.challenge_id = challenges.id
-       and member_row.member_id = (select auth.uid())
-  )
-);
+using (public.challenge_member_visible_v1(id, (select auth.uid())));
 
 drop policy if exists solves_member_realtime_read on public.solves;
 create policy solves_member_realtime_read
 on public.solves for select to authenticated
-using (exists (
-  select 1 from public.challenge_members member_row
-  join public.challenges challenge_row on challenge_row.id = member_row.challenge_id
-   where member_row.challenge_id = solves.challenge_id
-     and member_row.member_id = (select auth.uid())
-     and (challenge_row.retention_expires_at is null or challenge_row.retention_expires_at > clock_timestamp())
-));
+using (public.challenge_member_visible_v1(challenge_id, (select auth.uid())));
 
 -- Expired records are unavailable to the authenticated status/history seams,
 -- even if a cleanup worker has not physically removed them yet.

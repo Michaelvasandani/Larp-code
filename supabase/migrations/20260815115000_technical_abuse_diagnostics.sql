@@ -26,28 +26,45 @@ $$;
 revoke all on function public.is_active_member_v1(uuid) from public;
 grant execute on function public.is_active_member_v1(uuid) to authenticated;
 
+-- RLS policies must not ask each other to prove the same membership: a
+-- challenge policy consulting challenge_members while challenge_members
+-- consults challenges causes PostgreSQL's infinite-recursion guard. This
+-- owner-bypassing predicate keeps the three read policies equivalent without
+-- broadening the authenticated table grants.
+create or replace function public.challenge_member_visible_v1(
+  p_challenge_id uuid,
+  p_member_id uuid
+)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select public.is_active_member_v1(p_member_id)
+    and exists (
+      select 1 from public.challenge_members member_row
+       where member_row.challenge_id = p_challenge_id
+         and member_row.member_id = p_member_id
+    )
+    and exists (
+      select 1 from public.challenges challenge_row
+       where challenge_row.id = p_challenge_id
+         and (challenge_row.retention_expires_at is null or challenge_row.retention_expires_at > statement_timestamp())
+    );
+$$;
+revoke all on function public.challenge_member_visible_v1(uuid, uuid) from public;
+grant execute on function public.challenge_member_visible_v1(uuid, uuid) to authenticated;
+
 drop policy if exists challenge_members_realtime_read on public.challenge_members;
 create policy challenge_members_realtime_read
 on public.challenge_members for select to authenticated
-using (public.is_active_member_v1((select auth.uid())) and member_id = (select auth.uid()));
+using (public.challenge_member_visible_v1(challenge_id, (select auth.uid())));
 
 drop policy if exists challenges_member_realtime_read on public.challenges;
 create policy challenges_member_realtime_read
 on public.challenges for select to authenticated
-using (public.is_active_member_v1((select auth.uid())) and exists (
-  select 1 from public.challenge_members member_row
-   where member_row.challenge_id = challenges.id
-     and member_row.member_id = (select auth.uid())
-));
+using (public.challenge_member_visible_v1(id, (select auth.uid())));
 
 drop policy if exists solves_member_realtime_read on public.solves;
 create policy solves_member_realtime_read
 on public.solves for select to authenticated
-using (public.is_active_member_v1((select auth.uid())) and exists (
-  select 1 from public.challenge_members member_row
-   where member_row.challenge_id = solves.challenge_id
-     and member_row.member_id = (select auth.uid())
-));
+using (public.challenge_member_visible_v1(challenge_id, (select auth.uid())));
 
 create or replace function public.reject_inactive_member_mutation_v1()
 returns trigger language plpgsql security definer set search_path = '' as $$
@@ -61,8 +78,12 @@ end;
 $$;
 
 drop trigger if exists challenges_active_member_guard on public.challenges;
+-- Authenticated Members have no direct UPDATE grant on Challenges. Keep the
+-- insert guard for any future client-side write, while allowing the
+-- security-definer lifecycle reconciler to transition a delayed Challenge
+-- after the Member's own account has been removed from auth sessions.
 create trigger challenges_active_member_guard
-before insert or update on public.challenges
+before insert on public.challenges
 for each row execute function public.reject_inactive_member_mutation_v1();
 drop trigger if exists solves_active_member_guard on public.solves;
 create trigger solves_active_member_guard
