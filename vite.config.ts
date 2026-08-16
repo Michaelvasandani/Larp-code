@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import react from "@vitejs/plugin-react";
@@ -60,10 +60,32 @@ function manifestPlugin(): Plugin {
   };
 }
 
+function grovekinAssetsPlugin(): Plugin {
+  return {
+    name: "larp-code-grovekin-assets",
+    generateBundle() {
+      const generatedRoot = resolve(process.cwd(), "art/grovekin/generated");
+      const emitDirectory = (directory: string, relativeDirectory = "") => {
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          const sourcePath = resolve(directory, entry.name);
+          const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) emitDirectory(sourcePath, relativePath);
+          else this.emitFile({
+            type: "asset",
+            fileName: `assets/grovekin/${relativePath}`,
+            source: readFileSync(sourcePath),
+          });
+        }
+      };
+      emitDirectory(generatedRoot);
+    },
+  };
+}
+
 export default defineConfig({
   root: resolve(process.cwd(), "src"),
   publicDir: false,
-  plugins: [react(), manifestPlugin()],
+  plugins: [react(), manifestPlugin(), grovekinAssetsPlugin()],
   define: {
     __CLIENT_VERSION__: JSON.stringify(packageMetadata.version),
     __SUPABASE_ANON_KEY__: JSON.stringify(supabaseAnonKey),

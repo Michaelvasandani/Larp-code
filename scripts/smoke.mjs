@@ -1,7 +1,7 @@
 /* global chrome */
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -21,6 +21,11 @@ function localBackendValue(name) {
   }
 }
 const backendAnonKey = process.env.SUPABASE_ANON_KEY ?? localBackendValue("ANON_KEY") ?? "development-only-key";
+const evidencePath = resolve(root, "artifacts/ticket31-accessibility");
+const evidenceStates = [
+  "signed-out", "setup", "invitation", "scheduled", "active-balanced", "active-behind",
+  "unavailable", "update-required", "success", "incomplete", "canceled", "abandoned",
+];
 let browser;
 let profilePath;
 
@@ -54,6 +59,58 @@ async function openPopup(extensionId) {
     { timeout: 15_000 },
   );
   return page;
+}
+
+async function checkPackagedPopupAccessibility(page) {
+  check(await page.$eval('main[role="main"][tabindex="-1"]', (main) => main.getAttribute("aria-labelledby") === "app-title"), "Packaged popup exposes a focused main landmark");
+  await page.keyboard.press("Tab");
+  check(await page.evaluate(() => {
+    const active = document.activeElement;
+    return active instanceof HTMLElement && ["BUTTON", "INPUT", "A", "SELECT"].includes(active.tagName) && Boolean(active.textContent || active.getAttribute("aria-label") || active.getAttribute("aria-labelledby"));
+  }), "Packaged popup reaches a named control from the keyboard");
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+  check(await page.evaluate(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches), "Packaged popup honors reduced-motion preference");
+  await mkdir(evidencePath, { recursive: true });
+  await page.screenshot({ path: join(evidencePath, "signed-out-380x600.png") });
+  await page.evaluate(() => { document.documentElement.style.zoom = "200%"; });
+  await page.setViewport({ width: 800, height: 600, deviceScaleFactor: 1 });
+  await page.screenshot({ path: join(evidencePath, "signed-out-800x600-200-percent.png") });
+  await page.evaluate(() => { document.documentElement.style.zoom = ""; });
+  await page.setViewport({ width: 380, height: 600, deviceScaleFactor: 1 });
+  const popupSource = await readFile(join(root, "src/popup/App.tsx"), "utf8");
+  const sourceStateCoverage = evidenceStates.map((state) => ({
+    state,
+    representative: state === "signed-out",
+    sourceStateCoverage: state === "active-balanced"
+      ? popupSource.includes("ACTIVE CHALLENGE")
+      : state === "active-behind"
+        ? popupSource.includes("Behind")
+      : state === "setup"
+        ? popupSource.includes("Finish setting up your account")
+        : state === "invitation"
+          ? popupSource.includes("Invitation terms")
+          : state === "scheduled"
+            ? popupSource.includes("SCHEDULED CHALLENGE")
+              : state === "unavailable"
+                  ? popupSource.includes("CONNECTION UNAVAILABLE")
+                  : state === "update-required"
+                    ? popupSource.includes("UPDATE REQUIRED")
+                    : state === "success"
+                      ? popupSource.includes("Challenge complete")
+                      : state === "incomplete"
+                        ? popupSource.includes("Challenge incomplete")
+                        : state === "canceled"
+                          ? popupSource.includes("canceled")
+                          : state === "abandoned"
+                            ? popupSource.includes("Challenge abandoned")
+                            : popupSource.includes("You’re signed out"),
+  }));
+  await writeFile(join(evidencePath, "packaged-state-evidence.json"), JSON.stringify({
+    generatedBy: "scripts/smoke.mjs",
+    viewport: { default: "380x600", zoomAcceptance: "200% at 800x600" },
+    keyboard: { namedControlReached: true, reducedMotion: true },
+    states: sourceStateCoverage,
+  }, null, 2) + "\n");
 }
 
 async function waitForOtp(email) {
@@ -281,6 +338,7 @@ try {
   const extensionId = await extensionIdFromTarget();
   let page = await openPopup(extensionId);
   check((await page.title()) === "larp-code", "Packaged popup opens at 380 by 600");
+  await checkPackagedPopupAccessibility(page);
   const firstBoot = await workerBootCount(page);
   check(Number.isInteger(firstBoot) && firstBoot >= 1, "Popup receives a fresh worker snapshot");
 

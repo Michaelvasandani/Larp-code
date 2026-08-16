@@ -48,6 +48,15 @@ const realtimeOrigin = `${parsedOrigin.protocol === "https:" ? "wss" : "ws"}://$
 requireCondition(csp.includes(realtimeOrigin), "CSP does not allow the exact corresponding Realtime origin");
 
 const files = await filesIn(dist);
+const grovekinManifestPath = join(dist, "assets/grovekin/manifest.json");
+requireCondition(files.includes(grovekinManifestPath), "generated Grovekin manifest is missing from the package");
+const grovekinManifest = JSON.parse(await readFile(grovekinManifestPath, "utf8"));
+requireCondition(Array.isArray(grovekinManifest.clips) && grovekinManifest.clips.length >= 10, "Grovekin clip inventory is incomplete");
+requireCondition(Array.isArray(grovekinManifest.frames) && grovekinManifest.frames.length >= 20, "Grovekin animation frames are missing");
+requireCondition(files.includes(join(dist, "assets/grovekin", grovekinManifest.animationChecksums)), "Grovekin animation checksums are missing");
+for (const frame of grovekinManifest.frames) {
+  requireCondition(files.includes(join(dist, "assets/grovekin", frame.file)), `Grovekin frame is not packaged: ${frame.file}`);
+}
 const javascriptFiles = files.filter((file) => extname(file) === ".js");
 requireCondition(javascriptFiles.some((file) => relative(dist, file) === "service-worker.js"), "service worker bundle is missing");
 requireCondition(javascriptFiles.length >= 2, "popup and worker executable bundles are missing");

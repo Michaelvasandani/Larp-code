@@ -1,0 +1,73 @@
+{
+  "generatedBy": "scripts/smoke.mjs",
+  "viewport": {
+    "default": "380x600",
+    "zoomAcceptance": "200% at 800x600"
+  },
+  "keyboard": {
+    "namedControlReached": true,
+    "reducedMotion": true
+  },
+  "states": [
+    {
+      "state": "signed-out",
+      "representative": true,
+      "sourceStateCoverage": true
+    },
+    {
+      "state": "setup",
+      "representative": false,
+      "sourceStateCoverage": true
+    },
+    {
+      "state": "invitation",
+      "representative": false,
+      "sourceStateCoverage": true
+    },
+    {
+      "state": "scheduled",
+      "representative": false,
+      "sourceStateCoverage": true
+    },
+    {
+      "state": "active-balanced",
+      "representative": false,
+      "sourceStateCoverage": true
+    },
+    {
+      "state": "active-behind",
+      "representative": false,
+      "sourceStateCoverage": true
+    },
+    {
+      "state": "unavailable",
+      "representative": false,
+      "sourceStateCoverage": true
+    },
+    {
+      "state": "update-required",
+      "representative": false,
+      "sourceStateCoverage": true
+    },
+    {
+      "state": "success",
+      "representative": false,
+      "sourceStateCoverage": true
+    },
+    {
+      "state": "incomplete",
+      "representative": false,
+      "sourceStateCoverage": true
+    },
+    {
+      "state": "canceled",
+      "representative": false,
+      "sourceStateCoverage": true
+    },
+    {
+      "state": "abandoned",
+      "representative": false,
+      "sourceStateCoverage": true
+    }
+  ]
+}

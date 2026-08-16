@@ -19,6 +19,7 @@
     "package:check": "node scripts/check-package.mjs",
     "recovery:rehearse": "node scripts/rehearse-recovery.mjs",
     "smoke": "node scripts/smoke.mjs",
+    "accessibility:evidence": "node scripts/accessibility-evidence.mjs",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm package:check",
     "verify": "node scripts/verify.mjs"
   },
