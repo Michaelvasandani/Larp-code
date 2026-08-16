@@ -5,6 +5,7 @@ import {
   createUncertainCommandOutcome,
   isPopupRequest,
   type AppSnapshot,
+  type ChallengeSnapshot,
   type PopupRequest,
   type PopupResponse,
   type ProtocolError,
@@ -31,6 +32,11 @@ import {
   parseInvitation,
   type CreateInvitationRpc,
 } from "./invitation";
+import {
+  createAcceptInvitationCommandAdapter,
+  parseChallenge,
+  parseInvitationDetails,
+} from "./acceptance";
 
 const BOOT_COUNT_KEY = "larp-code.workerBootCount";
 const SESSION_STORAGE_PREFIX = "larp-code.supabase.";
@@ -152,6 +158,16 @@ const invitationCommandRpc: CreateInvitationRpc = {
     if (error) throw error;
     return data === null ? null : parseInvitation(data);
   },
+  async getPendingInvitationDetails() {
+    const { data, error } = await client.rpc("get_pending_invitation_details_for_member_v1");
+    if (error) throw error;
+    return data === null ? null : parseInvitationDetails(data);
+  },
+  async getCommittedChallenge() {
+    const { data, error } = await client.rpc("get_committed_challenge_for_member_v1");
+    if (error) throw error;
+    return data === null ? null : parseChallenge(data);
+  },
 };
 const displayNameCommands = createDisplayNameCommandAdapter({
   rpc: displayNameCommandRpc,
@@ -160,6 +176,23 @@ const displayNameCommands = createDisplayNameCommandAdapter({
 const invitationCommands = createInvitationCommandAdapter({
   rpc: invitationCommandRpc,
   storage: memberStorage,
+});
+const acceptanceCommands = createAcceptInvitationCommandAdapter({
+  storage: memberStorage,
+  rpc: {
+    async acceptInvitation(input) {
+      const { data, error } = await client.rpc("accept_invitation_v1", {
+        p_idempotency_key: input.idempotencyKey,
+        p_command_version: input.commandVersion,
+        p_command_kind: input.commandKind,
+        p_member_id: input.memberId,
+        p_member_email: input.memberEmail,
+        p_invitation_id: input.invitationId,
+      });
+      if (error) throw error;
+      return parseChallenge(data);
+    },
+  },
 });
 const bootId = crypto.randomUUID();
 const initialSessionStatePromise = authSessionAdapter.restoreSession();
@@ -221,6 +254,12 @@ function snapshotMetadata(health: FoundationHealth, worker: WorkerEvidence, pend
   };
 }
 
+async function buildScheduledSnapshot(challenge: ChallengeSnapshot): Promise<AppSnapshot> {
+  const health = await readFoundationHealth();
+  const worker = await workerEvidencePromise;
+  return { ...snapshotMetadata(health, worker, null), kind: "scheduled", challenge };
+}
+
 type AuthenticatedMember = {
   session: AuthSession;
   identity: { memberId: string; memberEmail: string };
@@ -245,12 +284,14 @@ async function withAuthenticatedMember<T>(operation: (member: AuthenticatedMembe
 
 type CommandResult =
   | { kind: "update_display_name"; result: Awaited<ReturnType<typeof displayNameCommands.updateDisplayName>> }
-  | { kind: "create_invitation"; result: Awaited<ReturnType<typeof invitationCommands.createInvitation>> };
+  | { kind: "create_invitation"; result: Awaited<ReturnType<typeof invitationCommands.createInvitation>> }
+  | { kind: "accept_invitation"; result: Awaited<ReturnType<typeof acceptanceCommands.acceptInvitation>> };
 type AppliedInvitationResult = Extract<Extract<CommandResult, { kind: "create_invitation" }>['result'], { status: "applied" }>;
+type AppliedAcceptanceResult = Extract<Extract<CommandResult, { kind: "accept_invitation" }>['result'], { status: "applied" }>;
 
 async function respondToCommand(
   command: CommandResult,
-  buildAppliedSnapshot?: (result: AppliedInvitationResult) => Promise<AppSnapshot>,
+  buildAppliedSnapshot?: (result: AppliedInvitationResult | AppliedAcceptanceResult) => Promise<AppSnapshot>,
 ): Promise<PopupResponse> {
   let snapshot: AppSnapshot;
   try {
@@ -279,9 +320,10 @@ async function respondToCommand(
     };
   }
   if (command.kind === "create_invitation" && buildAppliedSnapshot) {
-    snapshot = await buildAppliedSnapshot(
-      command.result as AppliedInvitationResult,
-    );
+    snapshot = await buildAppliedSnapshot(command.result as AppliedInvitationResult);
+  }
+  if (command.kind === "accept_invitation" && buildAppliedSnapshot) {
+    snapshot = await buildAppliedSnapshot(command.result as AppliedAcceptanceResult);
   }
   return {
     ok: true,
@@ -312,6 +354,7 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
   if (reconcilePending) {
     await displayNameCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
     await invitationCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
+    await acceptanceCommands.recover({ memberId: identity.memberId, memberEmail: identity.email });
   }
   const account = await memberAccount.getMemberAccount();
   if (!account) {
@@ -320,9 +363,18 @@ async function getAppSnapshot(reconcilePending = true): Promise<AppSnapshot> {
     if (!email) throw new Error("The authenticated session has no verified email.");
     return { ...snapshotMetadata(health, worker, null), kind: "setup_required", email };
   }
+  const incomingDetails = await invitationCommandRpc.getPendingInvitationDetails?.();
+  if (incomingDetails) {
+    const { invitation, ...details } = incomingDetails;
+    return { ...snapshotMetadata(health, worker, null), kind: "invitation", invitation, details };
+  }
   const incomingInvitation = await invitationCommandRpc.getPendingInvitation?.();
   if (incomingInvitation) {
     return { ...snapshotMetadata(health, worker, null), kind: "invitation", invitation: incomingInvitation };
+  }
+  const committedChallenge = await invitationCommandRpc.getCommittedChallenge?.();
+  if (committedChallenge) {
+    return { ...snapshotMetadata(health, worker, null), kind: "scheduled", challenge: committedChallenge };
   }
   const pendingCommand = await displayNameCommands.readPending();
   const metadata = snapshotMetadata(health, worker, pendingCommand);
@@ -395,8 +447,38 @@ async function handleRequest(request: PopupRequest): Promise<PopupResponse> {
             async (applied) => {
               const health = await readFoundationHealth();
               const worker = await workerEvidencePromise;
-              return { ...snapshotMetadata(health, worker, null), kind: "invitation", invitation: applied.invitation };
+              const invitation = (applied as AppliedInvitationResult).invitation;
+              return { ...snapshotMetadata(health, worker, null), kind: "invitation", invitation };
             },
+          );
+        });
+      }
+      case "accept_invitation": {
+        return withAuthenticatedMember(async ({ identity }) => {
+          const current = await getAppSnapshot(false);
+          // A stale/terminal/capacity-conflicting request still goes through the
+          // typed command path. The database decides the outcome, then
+          // respondToCommand fetches a fresh authorized Snapshot. The
+          // placeholder deliberately reveals no Invitation details to an
+          // outsider and cannot authorize a write on its own.
+          const invitation = current.kind === "invitation" && current.invitation.id === request.invitationId
+            ? current.invitation
+            : {
+                id: request.invitationId,
+                inviterId: "unknown",
+                inviterDisplayName: "A Member",
+                invitedEmail: identity.memberEmail,
+                timeZone: "UTC",
+                startDate: "1970-01-01",
+                deadlineDate: "1970-01-01",
+                problemSetVersionId: "unknown",
+                status: "pending" as const,
+                createdAt: "1970-01-01T00:00:00.000Z",
+              };
+          const result = await acceptanceCommands.acceptInvitation(invitation, identity);
+          return respondToCommand(
+            { kind: "accept_invitation", result },
+            async (applied) => buildScheduledSnapshot((applied as AppliedAcceptanceResult).challenge),
           );
         });
       }

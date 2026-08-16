@@ -108,6 +108,11 @@ describe("versioned popup/worker protocol", () => {
       startDate: "2026-08-16",
       deadlineDate: "2026-09-14",
     })).toBe(true);
+    expect(isPopupRequest({
+      version: PROTOCOL_VERSION,
+      type: "accept_invitation",
+      invitationId: "invitation-1",
+    })).toBe(true);
   });
 
   it("accepts a complete Invitation Snapshot and rejects omitted terms", () => {
@@ -131,6 +136,59 @@ describe("versioned popup/worker protocol", () => {
     };
     expect(isPopupResponse({ ok: true, snapshot: invitationSnapshot })).toBe(true);
     expect(isPopupResponse({ ok: true, snapshot: { ...invitationSnapshot, invitation: undefined } })).toBe(false);
+  });
+
+  it("accepts authenticated Invitation details and a complete scheduled Challenge", () => {
+    const details = {
+      problemSetVersion: {
+        id: "version-a",
+        sourceRepository: "https://github.com/neetcode-gh/leetcode",
+        sourceDataFile: ".problemSiteData.json",
+        sourceCommitSha: "a".repeat(40),
+        licenseNotice: "MIT License",
+        nonAffiliationNotice: "Independent product.",
+        importedAt: "2026-08-15T00:00:00.000Z",
+        problemCount: 150,
+      },
+      partner: { memberId: "member-1", email: "ada@example.test", displayName: "Ada" },
+      sharedRecord: { visibility: "both_members" as const, authority: "equal" as const, canEitherMemberEnd: true as const },
+    };
+    const snapshot = {
+      ...signedOutSnapshot,
+      kind: "invitation" as const,
+      invitation: {
+        id: "invitation-1",
+        inviterId: "member-1",
+        inviterDisplayName: "Ada",
+        invitedEmail: "friend@example.test",
+        timeZone: "America/Los_Angeles",
+        startDate: "2026-08-16",
+        deadlineDate: "2026-09-14",
+        problemSetVersionId: "version-a",
+        status: "pending" as const,
+        createdAt: "2026-08-15T00:00:00.000Z",
+      },
+      details,
+    };
+    expect(isPopupResponse({ ok: true, snapshot })).toBe(true);
+    expect(isPopupResponse({ ok: true, snapshot: {
+      ...signedOutSnapshot,
+      kind: "scheduled" as const,
+      challenge: {
+        id: "challenge-1",
+        invitationId: "invitation-1",
+        timeZone: "America/Los_Angeles",
+        startDate: "2026-08-16",
+        deadlineDate: "2026-09-14",
+        problemSetVersionId: "version-a",
+        status: "scheduled" as const,
+        createdAt: "2026-08-15T00:00:00.000Z",
+        members: [
+          { memberId: "member-1", email: "ada@example.test", displayName: "Ada", authority: "equal" as const },
+          { memberId: "member-2", email: "friend@example.test", displayName: "Grace", authority: "equal" as const },
+        ],
+      },
+    }})).toBe(true);
   });
 
   it("accepts an account-bound pending command and typed command outcome", () => {

@@ -108,6 +108,62 @@ export function createPendingCommandStore(storage: PendingCommandStorage) {
   };
 }
 
+type RecoverableCommandKind = TransactionCommandKind;
+type RecoverableCommandForKind<K extends RecoverableCommandKind> = Extract<PendingCommand, { kind: K }>;
+
+/** Shared send/recover lifecycle for every durable command envelope. */
+export function createRecoverableCommandRunner<
+  K extends RecoverableCommandKind,
+  TApplied extends Record<string, unknown>,
+  TCode extends string,
+>({
+  storage,
+  kind,
+  dispatch,
+  classifyFailure,
+}: {
+  storage: PendingCommandStorage;
+  kind: K;
+  dispatch: (pending: RecoverableCommandForKind<K>) => Promise<TApplied>;
+  classifyFailure: (error: unknown) => { code: TCode; message: string } | null;
+}) {
+  const pendingStore = createPendingCommandStore(storage);
+  type Result =
+    | ({ status: "applied"; kind: K; idempotencyKey: string } & TApplied)
+    | { status: "rejected"; kind: K; code: TCode; message: string }
+    | { status: "uncertain"; kind: K; idempotencyKey: string; message: "Checking whether this completed." };
+
+  async function send(pending: PendingCommand): Promise<Result> {
+    if (pending.kind !== kind) {
+      return { status: "uncertain", kind, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+    }
+    try {
+      const applied = await dispatch(pending as RecoverableCommandForKind<K>);
+      await pendingStore.clear(pending.idempotencyKey);
+      return { status: "applied", kind, idempotencyKey: pending.idempotencyKey, ...applied };
+    } catch (error) {
+      const known = classifyFailure(error);
+      if (known) {
+        await pendingStore.clear(pending.idempotencyKey);
+        return { status: "rejected", kind, ...known };
+      }
+      return { status: "uncertain", kind, idempotencyKey: pending.idempotencyKey, message: "Checking whether this completed." };
+    }
+  }
+
+  async function recover(identity: CommandIdentity): Promise<Result | null> {
+    const pending = await pendingStore.read();
+    if (!pending || pending.kind !== kind) return null;
+    if (!sameIdentity(pending, identity)) {
+      await pendingStore.clear(pending.idempotencyKey);
+      return null;
+    }
+    return send(pending);
+  }
+
+  return { pendingStore, send, recover, readPending: pendingStore.read };
+}
+
 export function createDisplayNameCommandAdapter({
   rpc,
   storage,
@@ -148,7 +204,7 @@ export function createDisplayNameCommandAdapter({
 
   async function recover(identity: CommandIdentity): Promise<DisplayNameCommandResult | null> {
     const pending = await pendingStore.read();
-    if (!pending) return null;
+    if (!pending || pending.kind !== "update_display_name") return null;
     if (!sameIdentity(pending, identity)) {
       await pendingStore.clear(pending.idempotencyKey);
       return null;

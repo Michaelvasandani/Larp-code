@@ -463,11 +463,26 @@ function MemberAccountView({
 function InvitationView({
   snapshot,
   onSignOut,
+  onAccept,
+  commandOutcome,
 }: {
   snapshot: Extract<AppSnapshot, { kind: "invitation" }>;
   onSignOut: () => Promise<void>;
+  onAccept: (request: PopupRequest) => Promise<void>;
+  commandOutcome?: CommandOutcome;
 }) {
   const { invitation } = snapshot;
+  const [isAccepting, setAccepting] = useState(false);
+  const isPending = invitation.status === "pending";
+  async function accept() {
+    if (!isPending || isAccepting) return;
+    setAccepting(true);
+    try {
+      await onAccept({ version: PROTOCOL_VERSION, type: "accept_invitation", invitationId: invitation.id });
+    } finally {
+      setAccepting(false);
+    }
+  }
   return (
     <section className="state-card" aria-labelledby="invitation-title">
       <p className="eyebrow">INVITATION</p>
@@ -483,10 +498,54 @@ function InvitationView({
         <div><dt>Deadline Date</dt><dd>{invitation.deadlineDate}</dd></div>
         <div><dt>Problem Set Version</dt><dd>{invitation.problemSetVersionId}</dd></div>
       </dl>
+      {snapshot.details && (
+        <>
+          <dl className="account-details">
+            <div><dt>Pinned catalog commit</dt><dd>{snapshot.details.problemSetVersion.sourceCommitSha}</dd></div>
+            <div><dt>Pinned problem count</dt><dd>{snapshot.details.problemSetVersion.problemCount}</dd></div>
+            <div><dt>Partner identity</dt><dd>{snapshot.details.partner.displayName} ({snapshot.details.partner.email})</dd></div>
+            <div><dt>Shared record</dt><dd>{snapshot.details.sharedRecord.visibility === "both_members" ? "Visible to both Members" : "Private"}</dd></div>
+            <div><dt>Authority</dt><dd>{snapshot.details.sharedRecord.authority === "equal" ? "Equal" : snapshot.details.sharedRecord.authority}</dd></div>
+          </dl>
+        </>
+      )}
       <p>Both Members will have equal authority after acceptance. Either Member can end the shared Challenge.</p>
+      {commandOutcome?.status === "rejected" && (
+        <p className="auth-status error-status" role="alert">{commandOutcome.message}</p>
+      )}
+      {commandOutcome?.status === "uncertain" && (
+        <p className="auth-status" role="status" aria-live="polite">Checking whether acceptance completed. Refresh to reconcile the authoritative Challenge state.</p>
+      )}
+      {isPending && (
+        <button type="button" className="primary-button" onClick={() => void accept()} disabled={isAccepting || commandOutcome?.status === "uncertain"}>
+          {isAccepting ? "Accepting Invitation…" : "Accept Invitation"}
+        </button>
+      )}
       <a className="text-button policy-link" href="legal.html" target="_blank" rel="noreferrer">Read Legal and About</a>
       <a className="text-button policy-link" href="privacy.html" target="_blank" rel="noreferrer">Read the public privacy policy</a>
       <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
+    </section>
+  );
+}
+
+function ScheduledView({ snapshot, onSignOut }: { snapshot: Extract<AppSnapshot, { kind: "scheduled" }>; onSignOut: () => Promise<void> }) {
+  const challenge = snapshot.challenge;
+  return (
+    <section className="state-card" aria-labelledby="scheduled-title">
+      <p className="eyebrow">SCHEDULED CHALLENGE</p>
+      <h2 id="scheduled-title">Your shared Challenge is scheduled</h2>
+      {challenge && (
+        <dl className="account-details">
+          <div><dt>Challenge Time Zone</dt><dd>{challenge.timeZone}</dd></div>
+          <div><dt>Start Date</dt><dd>{challenge.startDate}</dd></div>
+          <div><dt>Deadline Date</dt><dd>{challenge.deadlineDate}</dd></div>
+          <div><dt>Problem Set Version</dt><dd>{challenge.problemSetVersionId}</dd></div>
+          <div><dt>Members</dt><dd>{challenge.members.map((member) => member.displayName).join(" and ")}</dd></div>
+        </dl>
+      )}
+      <p>Both Members have equal authority, see the shared record, and can end the Challenge.</p>
+      <button type="button" className="primary-button" onClick={() => void onSignOut()}>Sign out</button>
+      <SnapshotDetails snapshot={snapshot} />
     </section>
   );
 }
@@ -522,7 +581,7 @@ export function App() {
       setAuthState({ status: "requesting_code" });
     }
     if (request.type === "create_member_account") setSetupError(undefined);
-    if (request.type === "update_display_name") setCommandOutcome(undefined);
+    if (request.type === "update_display_name" || request.type === "accept_invitation") setCommandOutcome(undefined);
     try {
       const response = await sendRequest(request);
       if (!response.ok) {
@@ -552,7 +611,7 @@ export function App() {
           : current);
       }
     } catch {
-      if (request.type === "update_display_name") {
+      if (request.type === "update_display_name" || request.type === "accept_invitation") {
         setCommandOutcome(createUncertainCommandOutcome("pending-recovery"));
         void requestSnapshot().then((snapshot) => {
           setState({ status: "loaded", snapshot });
@@ -627,14 +686,19 @@ export function App() {
       )}
 
       {state.status === "loaded" && state.snapshot.kind === "invitation" && (
-        <InvitationView snapshot={state.snapshot} onSignOut={signOut} />
+        <InvitationView snapshot={state.snapshot} onSignOut={signOut} onAccept={sendAuthAction} commandOutcome={commandOutcome} />
+      )}
+
+      {state.status === "loaded" && state.snapshot.kind === "scheduled" && (
+        <ScheduledView snapshot={state.snapshot} onSignOut={signOut} />
       )}
 
       {state.status === "loaded"
         && state.snapshot.kind !== "signed_out"
         && state.snapshot.kind !== "setup_required"
         && state.snapshot.kind !== "account"
-        && state.snapshot.kind !== "invitation" && (
+        && state.snapshot.kind !== "invitation"
+        && state.snapshot.kind !== "scheduled" && (
         <AuthenticatedPlaceholder snapshot={state.snapshot} onSignOut={signOut} />
       )}
 
