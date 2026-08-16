@@ -130,8 +130,13 @@ const client: SupabaseClient = createClient(__SUPABASE_URL__, __SUPABASE_ANON_KE
   },
 });
 
+const authApi = client.auth as unknown as AuthApi;
+authApi.claimEmailOtp = async (email) => {
+  const { error } = await client.rpc("claim_email_otp_request_v1", { p_destination_email: email });
+  return { error };
+};
 const authSessionAdapter = createAuthSessionAdapter({
-  auth: client.auth as unknown as AuthApi,
+  auth: authApi,
   storage: memberStorage,
   sessionStorageKey: SUPABASE_SESSION_STORAGE_KEY,
 });

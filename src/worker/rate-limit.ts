@@ -1,45 +1,41 @@
-export type SlidingWindowEntry = Readonly<{
-  accountKey: string;
-  destinationKey: string;
-  attempts: number;
+export type SlidingWindowStorage = Readonly<{
+  get: (key: string) => Promise<unknown>;
+  set: (key: string, value: unknown) => Promise<void>;
 }>;
 
-type Bucket = { startedAt: number; attempts: number };
+type Bucket = { windowStartedAt: number; attempts: number };
 
-/** In-memory boundary for a worker instance; the server remains authoritative. */
+/** Worker fallback limiter backed by the same Member-owned storage as auth. */
 export function createSlidingWindowLimiter({
+  storage,
+  prefix = "rate-limit.",
   maxAttempts,
   windowMs,
   now = () => Date.now(),
 }: {
+  storage: SlidingWindowStorage;
+  prefix?: string;
   maxAttempts: number;
   windowMs: number;
   now?: () => number;
 }) {
-  const buckets = new Map<string, Bucket>();
-
-  function allow(accountKey: string, destinationKey: string): boolean {
-    const key = `${accountKey}\u0000${destinationKey}`;
+  async function allow(accountKey: string, destinationKey: string): Promise<boolean> {
+    const key = `${prefix}${encodeURIComponent(accountKey)}:${encodeURIComponent(destinationKey)}`;
     const current = now();
-    const existing = buckets.get(key);
-    if (!existing || current - existing.startedAt >= windowMs) {
-      buckets.set(key, { startedAt: current, attempts: 1 });
+    const stored = await storage.get(key);
+    const existing = typeof stored === "object" && stored !== null
+      ? stored as Partial<Bucket>
+      : {};
+    const windowStartedAt = typeof existing.windowStartedAt === "number" ? existing.windowStartedAt : current;
+    const attempts = typeof existing.attempts === "number" ? existing.attempts : 0;
+    if (current - windowStartedAt >= windowMs) {
+      await storage.set(key, { windowStartedAt: current, attempts: 1 });
       return true;
     }
-    if (existing.attempts >= maxAttempts) return false;
-    existing.attempts += 1;
+    if (attempts >= maxAttempts) return false;
+    await storage.set(key, { windowStartedAt, attempts: attempts + 1 });
     return true;
   }
 
-  function entries(): SlidingWindowEntry[] {
-    const current = now();
-    return [...buckets.entries()]
-      .filter(([, bucket]) => current - bucket.startedAt < windowMs)
-      .map(([key, bucket]) => {
-        const [accountKey, destinationKey] = key.split("\u0000");
-        return { accountKey: accountKey!, destinationKey: destinationKey!, attempts: bucket.attempts };
-      });
-  }
-
-  return { allow, entries };
+  return { allow };
 }

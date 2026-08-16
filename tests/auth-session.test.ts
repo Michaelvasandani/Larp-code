@@ -29,22 +29,29 @@ function storageWith(values: Record<string, unknown> = {}): MemberStorage & { va
 function authWith(overrides: Partial<AuthApi> = {}): AuthApi & {
   requested: string[];
   verified: string[];
+  claimed: string[];
   signOutCalls: number;
 } {
   const state = {
     requested: [] as string[],
     verified: [] as string[],
+    claimed: [] as string[],
     signOutCalls: 0,
   };
   return {
     requested: state.requested,
     verified: state.verified,
+    claimed: state.claimed,
     get signOutCalls() { return state.signOutCalls; },
     getSession: async () => ({ data: { session: null }, error: null }),
     refreshSession: async () => ({ data: { session: null }, error: null }),
     signInWithOtp: async ({ email }) => {
       state.requested.push(email);
       return { data: {}, error: null };
+    },
+    claimEmailOtp: async (email) => {
+      state.claimed.push(email);
+      return { error: null };
     },
     verifyOtp: async ({ email, token }) => {
       state.verified.push(`${email}:${token}`);
@@ -120,6 +127,17 @@ describe("service-worker-owned auth/session adapter", () => {
       "other@example.test",
       "member@example.test",
     ]);
+  });
+
+  it("requires the authoritative shared OTP claim before sending", async () => {
+    const auth = authWith({ claimEmailOtp: async () => ({ error: { status: 429, message: "Too many requests" } }) });
+    const adapter = createAuthSessionAdapter({ auth, storage: storageWith(), cooldownMs: 0 });
+
+    await expect(adapter.requestEmailOtp("member@example.test")).resolves.toEqual({
+      status: "rate_limited",
+      retryAfterSeconds: 30,
+    });
+    expect(auth.requested).toEqual([]);
   });
 
   it("distinguishes invalid, expired, rate-limited, and unavailable verification failures", async () => {

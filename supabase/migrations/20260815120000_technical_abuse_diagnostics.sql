@@ -16,6 +16,67 @@ alter table public.member_accounts
   );
 grant select on public.member_accounts to service_role;
 
+create or replace function public.is_active_member_v1(p_member_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select p_member_id is not null and exists (
+    select 1 from public.member_accounts
+     where id = p_member_id and status = 'active'
+  );
+$$;
+revoke all on function public.is_active_member_v1(uuid) from public;
+grant execute on function public.is_active_member_v1(uuid) to authenticated;
+
+drop policy if exists challenge_members_realtime_read on public.challenge_members;
+create policy challenge_members_realtime_read
+on public.challenge_members for select to authenticated
+using (public.is_active_member_v1((select auth.uid())) and member_id = (select auth.uid()));
+
+drop policy if exists challenges_member_realtime_read on public.challenges;
+create policy challenges_member_realtime_read
+on public.challenges for select to authenticated
+using (public.is_active_member_v1((select auth.uid())) and exists (
+  select 1 from public.challenge_members member_row
+   where member_row.challenge_id = challenges.id
+     and member_row.member_id = (select auth.uid())
+));
+
+drop policy if exists solves_member_realtime_read on public.solves;
+create policy solves_member_realtime_read
+on public.solves for select to authenticated
+using (public.is_active_member_v1((select auth.uid())) and exists (
+  select 1 from public.challenge_members member_row
+   where member_row.challenge_id = solves.challenge_id
+     and member_row.member_id = (select auth.uid())
+));
+
+create or replace function public.reject_inactive_member_mutation_v1()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  if (select auth.uid()) is not null
+    and not public.is_active_member_v1((select auth.uid())) then
+    raise exception 'The Member Account is unavailable.' using errcode = '42501';
+  end if;
+  return NEW;
+end;
+$$;
+
+drop trigger if exists challenges_active_member_guard on public.challenges;
+create trigger challenges_active_member_guard
+before insert or update on public.challenges
+for each row execute function public.reject_inactive_member_mutation_v1();
+drop trigger if exists solves_active_member_guard on public.solves;
+create trigger solves_active_member_guard
+before insert or update on public.solves
+for each row execute function public.reject_inactive_member_mutation_v1();
+drop trigger if exists solve_corrections_active_member_guard on public.solve_corrections;
+create trigger solve_corrections_active_member_guard
+before insert or update on public.solve_corrections
+for each row execute function public.reject_inactive_member_mutation_v1();
+drop trigger if exists invitations_active_member_guard on public.invitations;
+create trigger invitations_active_member_guard
+before insert or update on public.invitations
+for each row execute function public.reject_inactive_member_mutation_v1();
+
 -- Destination limiting already exists on the Invitation command. This second
 -- bucket prevents an attacker from evading it by rotating destination inputs.
 create table public.invitation_account_rate_limits (
@@ -52,6 +113,59 @@ create trigger invitations_account_rate_limit
 before insert on public.invitations
 for each row execute function public.enforce_invitation_account_rate_limit_v1();
 
+-- Authentication requests must share an authoritative bucket across browsers
+-- and worker restarts. Unknown destinations use a privacy-preserving hash;
+-- known accounts also consume an account-wide bucket.
+create table public.otp_request_rate_limits (
+  scope_key text primary key,
+  window_started_at timestamptz not null,
+  attempts integer not null default 0 check (attempts >= 0)
+);
+alter table public.otp_request_rate_limits enable row level security;
+revoke all on public.otp_request_rate_limits from anon, authenticated;
+
+create or replace function public.claim_email_otp_request_v1(p_destination_email text)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare
+  clean_destination text := lower(btrim(coalesce(p_destination_email, '')));
+  account_id uuid;
+  current_scope_key text;
+  attempt_count integer;
+  window_start timestamptz := date_trunc('hour', clock_timestamp());
+  scope_keys text[];
+begin
+  if clean_destination !~ '^[^[:space:]@]+@[^[:space:]@]+[.][^[:space:]@]+$'
+    or length(clean_destination) > 320 then
+    raise exception 'A valid email destination is required.' using errcode = '22023';
+  end if;
+  select id into account_id from auth.users where lower(email) = clean_destination limit 1;
+  scope_keys := array['destination:' || md5(clean_destination)];
+  if account_id is not null then
+    scope_keys := array_append(scope_keys, 'account:' || account_id::text);
+  end if;
+  foreach current_scope_key in array scope_keys loop
+    insert into public.otp_request_rate_limits(scope_key, window_started_at, attempts)
+    values (current_scope_key, window_start, 1)
+    on conflict (scope_key) do update
+      set attempts = case
+        when public.otp_request_rate_limits.window_started_at < window_start
+          then 1
+        else public.otp_request_rate_limits.attempts + 1
+      end,
+      window_started_at = case
+        when public.otp_request_rate_limits.window_started_at < window_start
+          then window_start
+        else public.otp_request_rate_limits.window_started_at
+      end
+    returning attempts into attempt_count;
+    if attempt_count > 5 then
+      raise exception 'Too many requests. Please wait and try again.' using errcode = 'P0002';
+    end if;
+  end loop;
+  return true;
+end;
+$$;
+
 alter table public.challenges
   add column if not exists terminal_reason text;
 
@@ -75,40 +189,57 @@ create trigger challenges_terminal_reason_immutable
 before update on public.challenges
 for each row execute function public.reject_terminal_reason_update_v1();
 
+create or replace function public.member_identity_json_v1(
+  p_member_id uuid,
+  p_fallback_email text,
+  p_fallback_display_name text
+)
+returns jsonb language sql stable security definer set search_path = '' as $$
+  with account as (
+    select status, email, display_name
+      from public.member_accounts
+     where id = p_member_id
+  )
+  select jsonb_build_object(
+    'email', case when (select status from account) = 'suspended'
+      then 'Suspended Member' else coalesce((select email from account), p_fallback_email) end,
+    'displayName', case when (select status from account) = 'suspended'
+      then 'Suspended Member' else coalesce((select display_name from account), p_fallback_display_name) end
+  );
+$$;
+
 create or replace function public.challenge_member_json_v1(member_row public.challenge_members)
 returns jsonb language sql stable set search_path = '' as $$
   select jsonb_build_object(
     'memberId', member_row.member_id,
-    'email', case when exists (
-      select 1 from public.member_accounts account_row
-       where account_row.id = member_row.member_id and account_row.status = 'suspended'
-    ) then 'Suspended Member' else member_row.member_email end,
-    'displayName', case when exists (
-      select 1 from public.member_accounts account_row
-       where account_row.id = member_row.member_id and account_row.status = 'suspended'
-    ) then 'Suspended Member' else member_row.display_name end,
+    'email', visible_identity.value->>'email',
+    'displayName', visible_identity.value->>'displayName',
     'authority', member_row.authority
-  );
+  ) from lateral (
+    select public.member_identity_json_v1(member_row.member_id, member_row.member_email, member_row.display_name) as value
+  ) visible_identity;
 $$;
 
 create or replace function public.invitation_json_v1(invitation_row public.invitations)
 returns jsonb language sql stable set search_path = '' as $$
+  with inviter as (
+    select public.member_identity_json_v1(invitation_row.inviter_id, null, 'A Member') as identity,
+           exists (select 1 from public.deleted_member_records record_row where record_row.id = invitation_row.inviter_id) as deleted
+  ), invited as (
+    select account_row.status
+      from auth.users user_row
+      left join public.member_accounts account_row on account_row.id = user_row.id
+     where lower(user_row.email) = lower(invitation_row.invited_email)
+     limit 1
+  )
   select jsonb_build_object(
     'id', invitation_row.id,
     'inviterId', invitation_row.inviter_id,
-    'inviterDisplayName', case when exists (
-      select 1 from public.member_accounts account_row
-       where account_row.id = invitation_row.inviter_id and account_row.status = 'suspended'
-    ) then 'Suspended Member'
-      when exists (select 1 from public.deleted_member_records record_row where record_row.id = invitation_row.inviter_id)
-        then 'Deleted Member'
-      else coalesce((select display_name from public.member_accounts where id = invitation_row.inviter_id), 'A Member') end,
+    'inviterDisplayName', case when (select deleted from inviter) then 'Deleted Member'
+      else (select identity->>'displayName' from inviter) end,
     'invitedEmail', case when invitation_row.deleted_member_record_id is not null then 'Deleted Member'
-      when exists (
-      select 1 from auth.users user_row
-      join public.member_accounts account_row on account_row.id = user_row.id
-       where lower(user_row.email) = lower(invitation_row.invited_email) and account_row.status = 'suspended'
-    ) then 'Suspended Member' else invitation_row.invited_email end,
+      when (select status from invited) = 'suspended' then 'Suspended Member'
+      else invitation_row.invited_email end,
     'timeZone', invitation_row.challenge_time_zone,
     'startDate', invitation_row.start_date,
     'deadlineDate', invitation_row.deadline_date,
@@ -122,6 +253,13 @@ $$;
 
 create or replace function public.invitation_details_json_v1(invitation_row public.invitations)
 returns jsonb language sql stable security definer set search_path = '' as $$
+  with partner as (
+    select public.member_identity_json_v1(
+      invitation_row.inviter_id,
+      lower(coalesce((select email from auth.users where id = invitation_row.inviter_id), '')),
+      'A Member'
+    ) as identity
+  )
   select jsonb_build_object(
     'invitation', public.effective_invitation_json_v1(invitation_row),
     'problemSetVersion', (
@@ -131,14 +269,8 @@ returns jsonb language sql stable security definer set search_path = '' as $$
     ),
     'partner', jsonb_build_object(
       'memberId', invitation_row.inviter_id,
-      'email', case when exists (
-        select 1 from public.member_accounts account_row
-         where account_row.id = invitation_row.inviter_id and account_row.status = 'suspended'
-      ) then 'Suspended Member' else lower(coalesce((select email from auth.users where id = invitation_row.inviter_id), '')) end,
-      'displayName', case when exists (
-        select 1 from public.member_accounts account_row
-         where account_row.id = invitation_row.inviter_id and account_row.status = 'suspended'
-      ) then 'Suspended Member' else coalesce((select display_name from public.member_accounts where id = invitation_row.inviter_id), 'A Member') end
+      'email', (select identity->>'email' from partner),
+      'displayName', (select identity->>'displayName' from partner)
     ),
     'sharedRecord', jsonb_build_object('visibility', 'both_members', 'authority', 'equal', 'canEitherMemberEnd', true)
   );
@@ -201,47 +333,50 @@ returns jsonb language sql stable security definer set search_path = '' as $$
   select public.get_latest_terminal_challenge_for_member_v1();
 $$;
 
-create or replace function public.get_invitation_v1(p_invitation_id uuid)
-returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+create or replace function public.authorized_invitation_v1(p_invitation_id uuid)
+returns public.invitations language plpgsql volatile security definer set search_path = '' as $$
 declare
   current_member uuid := (select auth.uid());
   caller_email text;
   invitation_row public.invitations;
 begin
-  if not exists (select 1 from public.member_accounts account_row
-    where account_row.id = current_member and account_row.status = 'active') then
+  if not public.is_active_member_v1(current_member) then
     raise exception 'Invitation is unavailable.' using errcode = '42501';
   end if;
   select * into invitation_row from public.invitations where id = p_invitation_id;
   select lower(email) into caller_email from auth.users where id = current_member;
-  if not found or current_member is null
-    or (invitation_row.inviter_id is distinct from current_member and lower(coalesce(invitation_row.invited_email, '')) is distinct from caller_email) then
+  if not found or invitation_row.id is null
+    or (invitation_row.inviter_id is distinct from current_member
+      and lower(coalesce(invitation_row.invited_email, '')) is distinct from caller_email) then
     raise exception 'Invitation is unavailable.' using errcode = '42501';
   end if;
-  if invitation_row.retention_expires_at is not null and invitation_row.retention_expires_at <= clock_timestamp() then return null; end if;
+  if invitation_row.retention_expires_at is not null
+    and invitation_row.retention_expires_at <= clock_timestamp() then
+    return null;
+  end if;
   invitation_row := public.expire_invitation_if_due_v1(invitation_row.id);
+  return invitation_row;
+end;
+$$;
+
+create or replace function public.get_invitation_v1(p_invitation_id uuid)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare
+  invitation_row public.invitations;
+begin
+  invitation_row := public.authorized_invitation_v1(p_invitation_id);
+  if invitation_row.id is null then return null; end if;
   return public.invitation_json_v1(invitation_row);
 end;
 $$;
 
 create or replace function public.get_invitation_details_v1(p_invitation_id uuid)
-returns jsonb language plpgsql stable security definer set search_path = '' as $$
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare
-  current_member uuid := (select auth.uid());
-  caller_email text;
   invitation_row public.invitations;
 begin
-  if not exists (select 1 from public.member_accounts account_row
-    where account_row.id = current_member and account_row.status = 'active') then
-    raise exception 'Invitation is unavailable.' using errcode = '42501';
-  end if;
-  select * into invitation_row from public.invitations where id = p_invitation_id;
-  select lower(email) into caller_email from auth.users where id = current_member;
-  if not found or current_member is null
-    or (invitation_row.inviter_id is distinct from current_member and lower(coalesce(invitation_row.invited_email, '')) is distinct from caller_email) then
-    raise exception 'Invitation is unavailable.' using errcode = '42501';
-  end if;
-  if invitation_row.retention_expires_at is not null and invitation_row.retention_expires_at <= clock_timestamp() then return null; end if;
+  invitation_row := public.authorized_invitation_v1(p_invitation_id);
+  if invitation_row.id is null then return null; end if;
   return public.invitation_details_json_v1(invitation_row);
 end;
 $$;
@@ -313,15 +448,24 @@ declare
   normalized_key text;
 begin
   if value is null then return true; end if;
+  if jsonb_typeof(value) = 'string' then
+    return not ((value #>> '{}') ~ '[^[:space:]@]+@[^[:space:]@]+[.][^[:space:]@]+'
+      or (value #>> '{}') ~ '(^|[^0-9])[0-9]{6}([^0-9]|$)');
+  end if;
   if jsonb_typeof(value) = 'array' then
-    for item in select value as child loop
+    for item in select array_item.value as child
+      from jsonb_array_elements(value) as array_item(value) loop
       if not public.security_event_details_safe_v1(item.child) then return false; end if;
     end loop;
     return true;
   end if;
   if jsonb_typeof(value) <> 'object' then return true; end if;
   for item in select * from jsonb_each(value) loop
-    normalized_key := lower(regexp_replace(item.key, '[^a-z]', '', 'g'));
+    normalized_key := lower(regexp_replace(item.key, '[^a-zA-Z]', '', 'g'));
+    if normalized_key not in (
+      'code', 'operation', 'operatoraction', 'outcome', 'reason', 'resource',
+      'retryafterseconds', 'safe', 'source', 'status'
+    ) then return false; end if;
     if normalized_key in (
       'email', 'memberemail', 'recipientemail', 'token', 'accesstoken', 'refreshtoken',
       'otp', 'authcode', 'verificationcode', 'passcode', 'solve', 'solvecontent',
@@ -329,8 +473,8 @@ begin
       'memberdata', 'displayname', 'invitationterms', 'challengeprogress'
     ) then return false; end if;
     if jsonb_typeof(item.value) = 'string'
-      and ((item.value #>> '{}') ~ '^[^[:space:]@]+@[^[:space:]@]+[.][^[:space:]@]+$'
-        or (item.value #>> '{}') ~ '^[0-9]{6}$') then
+      and ((item.value #>> '{}') ~ '[^[:space:]@]+@[^[:space:]@]+[.][^[:space:]@]+'
+        or (item.value #>> '{}') ~ '(^|[^0-9])[0-9]{6}([^0-9]|$)') then
       return false;
     end if;
     if not public.security_event_details_safe_v1(item.value) then return false; end if;
@@ -360,7 +504,8 @@ begin
   if coalesce((select auth.role()), '') <> 'service_role' then
     raise exception 'Security event recording is restricted to the operator boundary.' using errcode = '42501';
   end if;
-  if p_event_key is null or btrim(p_event_key) = '' then
+  if p_event_key is null or btrim(p_event_key) = ''
+    or p_event_key !~ '^[a-z][a-z0-9_.:-]{0,119}$' then
     raise exception 'Security event identity is required.' using errcode = '22023';
   end if;
   if not public.security_event_details_safe_v1(coalesce(p_details, '{}'::jsonb)) then
@@ -546,6 +691,13 @@ begin
       challenge_row.status, challenge_row.start_date, challenge_row.challenge_time_zone, authoritative_now
     );
     if effective_status = 'active' then
+      if challenge_row.status = 'scheduled' then
+        -- A scheduled row whose effective date has arrived must first cross
+        -- the normal lifecycle boundary before it is abandoned.
+        update public.challenges
+           set status = 'active', updated_at = authoritative_now
+         where id = challenge_row.id and status = 'scheduled';
+      end if;
       update public.challenges
          set status = 'abandoned', terminal_actor_id = p_member_id, terminal_at = authoritative_now,
              terminal_reason = 'member_suspended', updated_at = authoritative_now
@@ -654,6 +806,11 @@ revoke all on function public.grant_support_diagnostic_access_v1(text, uuid, tim
 revoke all on function public.revoke_support_diagnostic_access_v1(text, uuid) from public, anon, authenticated;
 revoke all on function public.get_support_diagnostics_v1(text, uuid) from public, anon, authenticated;
 revoke all on function public.suspend_member_account_v1(uuid, text, text) from public, anon, authenticated;
+revoke all on function public.authorized_invitation_v1(uuid) from public, anon, authenticated;
+revoke all on function public.member_identity_json_v1(uuid, text, text) from public, anon, authenticated;
+revoke all on function public.reject_inactive_member_mutation_v1() from public, anon, authenticated;
+revoke all on function public.claim_email_otp_request_v1(text) from public;
+grant execute on function public.claim_email_otp_request_v1(text) to anon, authenticated;
 grant execute on function public.record_security_event_v1(text, text, text, uuid, jsonb) to service_role;
 grant execute on function public.grant_support_diagnostic_access_v1(text, uuid, timestamptz) to service_role;
 grant execute on function public.revoke_support_diagnostic_access_v1(text, uuid) to service_role;

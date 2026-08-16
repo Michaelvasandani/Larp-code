@@ -83,7 +83,7 @@ const abuseDb = describe.skipIf(!credentials)("technical-abuse boundary against 
       start_date: "2020-01-01",
       deadline_date: "2030-01-30",
       problem_set_version_id: "neetcode-150-2026-08-15",
-      status: "active",
+      status: "scheduled",
     }).select("id").single();
     expect(challenge.error).toBeNull();
     expect((await admin.from("challenge_members").insert([
@@ -123,6 +123,10 @@ const abuseDb = describe.skipIf(!credentials)("technical-abuse boundary against 
     expect(refreshedTarget.error).not.toBeNull();
     expect((await admin.from("invitations").select("status").eq("id", invitation.data!.id).single()).data?.status).toBe("revoked");
     expect((await admin.from("member_commitments").select("member_id").eq("challenge_id", challenge.data!.id)).data).toHaveLength(0);
+    expect((await admin.from("challenges").select("status,terminal_reason,terminal_at").eq("id", challenge.data!.id).single()).data).toMatchObject({
+      status: "abandoned",
+      terminal_reason: "member_suspended",
+    });
     const accountEndedNotice = await admin.from("transactional_notices").select("notice_type,recipient_member_id,recipient_email")
       .eq("source_event_key", `challenge:${challenge.data!.id}:account-ended`);
     expect(accountEndedNotice.error).toBeNull();
@@ -138,6 +142,34 @@ const abuseDb = describe.skipIf(!credentials)("technical-abuse boundary against 
     expect(partnerView.data.members).toEqual(expect.arrayContaining([
       expect.objectContaining({ memberId: target.id, email: "Suspended Member", displayName: "Suspended Member" }),
     ]));
+
+    const staleChallengeRows = await target.client.from("challenges").select("id").eq("id", challenge.data!.id);
+    const staleMemberRows = await target.client.from("challenge_members").select("member_id").eq("challenge_id", challenge.data!.id);
+    const staleSolveRows = await target.client.from("solves").select("id").eq("challenge_id", challenge.data!.id);
+    expect(staleChallengeRows.error).toBeNull();
+    expect(staleMemberRows.error).toBeNull();
+    expect(staleSolveRows.error).toBeNull();
+    expect(staleChallengeRows.data).toEqual([]);
+    expect(staleMemberRows.data).toEqual([]);
+    expect(staleSolveRows.data).toEqual([]);
+    const staleSnapshot = await target.client.rpc("get_challenge_v1", { p_challenge_id: challenge.data!.id });
+    expect(staleSnapshot.error).toBeNull();
+    expect(staleSnapshot.data).toBeNull();
+
+    const staleSolve = await admin.from("solves").insert({
+      member_id: target.id, challenge_id: challenge.data!.id, problem_id: "problem:0217-contains-duplicate",
+    }).select("id").single();
+    expect(staleSolve.error).toBeNull();
+    const staleSolveAfterInsert = await target.client.from("solves").select("id").eq("id", staleSolve.data!.id);
+    expect(staleSolveAfterInsert.error).toBeNull();
+    expect(staleSolveAfterInsert.data).toEqual([]);
+
+    const staleCorrection = await target.client.rpc("correct_solve_v1", {
+      p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "correct_solve",
+      p_member_id: target.id, p_member_email: target.email, p_challenge_id: challenge.data!.id,
+      p_solve_id: staleSolve.data!.id, p_category: "retracted", p_reason: "stale token", p_resulting_credit_status: "not_credited",
+    });
+    expect(staleCorrection.error?.code).toBe("42501");
 
     const targetMutation = await target.client.rpc("create_invitation_v1", {
       p_idempotency_key: crypto.randomUUID(), p_command_version: 1, p_command_kind: "create_invitation",
@@ -173,6 +205,26 @@ const abuseDb = describe.skipIf(!credentials)("technical-abuse boundary against 
       p_details: { note: member.email },
     });
     expect(valueUnsafe.error?.code).toBe("22023");
+    const embeddedUnsafe = await admin.rpc("record_security_event_v1", {
+      p_event_key: `diagnostic-embedded:${member.id}`,
+      p_event_type: "diagnostic",
+      p_subject_member_id: member.id,
+      p_details: { code: `OTP 123456 for ${member.email}` },
+    });
+    expect(embeddedUnsafe.error?.code).toBe("22023");
+    const nestedEmbeddedUnsafe = await admin.rpc("record_security_event_v1", {
+      p_event_key: `diagnostic-nested-embedded:${member.id}`,
+      p_event_type: "diagnostic",
+      p_subject_member_id: member.id,
+      p_details: { code: [`OTP 123456 for ${member.email}`] },
+    });
+    expect(nestedEmbeddedUnsafe.error?.code).toBe("22023");
+    const rawEventKey = await admin.rpc("record_security_event_v1", {
+      p_event_key: `diagnostic:${member.email}`,
+      p_event_type: "diagnostic",
+      p_subject_member_id: member.id,
+    });
+    expect(rawEventKey.error?.code).toBe("22023");
 
     const denied = await member.client.rpc("get_support_diagnostics_v1", {
       p_operator_id: "operator-test",
@@ -212,6 +264,21 @@ const abuseDb = describe.skipIf(!credentials)("technical-abuse boundary against 
       p_grant_id: grant.data,
     });
     expect(afterRevoke.error?.code).toBe("42501");
+  });
+
+  it("shares the OTP account and destination buckets across browser clients", async () => {
+    admin = createClient(credentials!.url, credentials!.serviceKey);
+    const member = await profile("OtpShared");
+    const secondBrowser = createClient(credentials!.url, credentials!.anonKey);
+    const signedIn = await secondBrowser.auth.signInWithPassword({ email: member.email, password: "pass-12345" });
+    expect(signedIn.error).toBeNull();
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const allowed = await member.client.rpc("claim_email_otp_request_v1", { p_destination_email: member.email });
+      expect(allowed.error).toBeNull();
+    }
+    const blocked = await secondBrowser.rpc("claim_email_otp_request_v1", { p_destination_email: member.email });
+    expect(blocked.error?.code).toBe("P0002");
   });
 });
 

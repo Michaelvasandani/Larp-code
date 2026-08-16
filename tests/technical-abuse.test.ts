@@ -50,25 +50,39 @@ describe("technical-abuse and diagnostic boundaries", () => {
       details: { email: "member@example.test" },
     })).toBe(false);
     expect(isPrivacySafeLog({ event: "diagnostic", extra: "unexpected" })).toBe(false);
-    const valueLeak = createPrivacyFilteredLog({ event: "diagnostic", details: { safe: "someone@example.test", digits: "123456" } });
+    const valueLeak = createPrivacyFilteredLog({ event: "diagnostic", details: {
+      safe: "prefix someone@example.test suffix",
+      digits: "code 123456 was rejected",
+    } });
     expect(valueLeak.details).toBeUndefined();
+    const unknownEvent = createPrivacyFilteredLog({
+      event: "diagnostic someone@example.test",
+      details: { code: "connection_unavailable" },
+    });
+    expect(unknownEvent).toMatchObject({ event: "unknown" });
+    expect(isPrivacySafeLog(unknownEvent)).toBe(true);
   });
 
-  it("limits repeated requests by account and destination without retaining payloads", () => {
+  it("limits repeated requests by account and destination in worker-owned persistence", async () => {
     let now = 1_000;
+    const values: Record<string, unknown> = {};
     const limiter = createSlidingWindowLimiter({
+      storage: {
+        async get(key: string) { return values[key] ?? null; },
+        async set(key: string, value: unknown) { values[key] = value; },
+      },
       maxAttempts: 2,
       windowMs: 10_000,
       now: () => now,
     });
 
-    expect(limiter.allow("account-1", "destination-1")).toBe(true);
-    expect(limiter.allow("account-1", "destination-1")).toBe(true);
-    expect(limiter.allow("account-1", "destination-1")).toBe(false);
-    expect(limiter.allow("account-2", "destination-1")).toBe(true);
+    await expect(limiter.allow("account-1", "destination-1")).resolves.toBe(true);
+    await expect(limiter.allow("account-1", "destination-1")).resolves.toBe(true);
+    await expect(limiter.allow("account-1", "destination-1")).resolves.toBe(false);
+    await expect(limiter.allow("account-2", "destination-1")).resolves.toBe(true);
     now = 11_001;
-    expect(limiter.allow("account-1", "destination-1")).toBe(true);
-    expect(limiter.entries()).toEqual([{ accountKey: "account-1", destinationKey: "destination-1", attempts: 1 }]);
+    await expect(limiter.allow("account-1", "destination-1")).resolves.toBe(true);
+    expect(Object.values(values)).toContainEqual({ windowStartedAt: 11_001, attempts: 1 });
   });
 
   it("defines technical abuse reasons without social moderation categories", () => {
