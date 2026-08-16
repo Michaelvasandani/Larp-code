@@ -20,7 +20,9 @@ unaccepted residual-risk record.
 
 “Code complete” is a useful local status, but it is not production evidence.
 Every external check must identify a dated, privacy-safe evidence reference
-and an explicit environment. Provider dashboards and controlled production
+and an explicit environment. Local references must resolve to regular,
+non-symlink files inside the repository and, when a check is confirmed, the
+record binds each observed check to the artifact's SHA-256 digest. Provider dashboards and controlled production
 reports are authoritative for Supabase, Resend, monitoring, recovery, and
 deliverability settings. The two-account suite must be run against production
 or an equivalently controlled release environment and must record outcomes,
@@ -41,4 +43,3 @@ The workflow records `submissionPerformed: false` and never submits to the
 Chrome Web Store. Submission, if later authorized, remains a separate human-
 controlled action after the record passes and the final digest is independently
 verified.
-

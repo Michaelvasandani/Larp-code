@@ -203,11 +203,11 @@
     }
   ],
   "gates": [
-    { "id": 0, "name": "Specification integrity", "status": "passed", "codeComplete": true, "evidenceRefs": ["docs/release/publication-dossier.md"] },
-    { "id": 1, "name": "Foundation contract", "status": "passed", "codeComplete": true, "evidenceRefs": ["artifacts/ticket40-publication/candidate-build.json"] },
-    { "id": 2, "name": "Domain correctness", "status": "passed", "codeComplete": true, "evidenceRefs": ["docs/release/publication-dossier.md"] },
-    { "id": 3, "name": "End-to-end experience", "status": "passed", "codeComplete": true, "evidenceRefs": ["artifacts/ticket31-accessibility/README.md", "artifacts/ticket36-grovekin/README.md"] },
-    { "id": 4, "name": "Resilience and data governance", "status": "passed", "codeComplete": true, "evidenceRefs": ["docs/operations/recovery-runbook.md"] },
+    { "id": 0, "name": "Specification integrity", "status": "passed", "codeComplete": true, "evidenceRefs": ["docs/release/publication-dossier.md"], "observedChecks": ["specificationContract"], "evidenceBindings": [{ "ref": "docs/release/publication-dossier.md", "sha256": "75b56afbd3c4e0513f5834a7c17915d5555567fa45053872993926bcca4988e7", "checks": ["specificationContract"] }] },
+    { "id": 1, "name": "Foundation contract", "status": "passed", "codeComplete": true, "evidenceRefs": ["artifacts/ticket40-publication/candidate-build.json"], "observedChecks": ["packageIdentity"], "evidenceBindings": [{ "ref": "artifacts/ticket40-publication/candidate-build.json", "sha256": "1a759e3b48cc43f54b7a7027e97893f63a97ae3f5fbfedcee84be0246de9121d", "checks": ["packageIdentity"] }] },
+    { "id": 2, "name": "Domain correctness", "status": "passed", "codeComplete": true, "evidenceRefs": ["docs/release/publication-dossier.md"], "observedChecks": ["domainScenarios"], "evidenceBindings": [{ "ref": "docs/release/publication-dossier.md", "sha256": "75b56afbd3c4e0513f5834a7c17915d5555567fa45053872993926bcca4988e7", "checks": ["domainScenarios"] }] },
+    { "id": 3, "name": "End-to-end experience", "status": "passed", "codeComplete": true, "evidenceRefs": ["artifacts/ticket31-accessibility/README.md", "artifacts/ticket36-grovekin/README.md"], "observedChecks": ["accessibility", "productionArt"], "evidenceBindings": [{ "ref": "artifacts/ticket31-accessibility/README.md", "sha256": "4e1ca8ee57644b68e4c77a97e4cfe39f3e75b577dafedb48e4b1fd8d5bfe7bf2", "checks": ["accessibility"] }, { "ref": "artifacts/ticket36-grovekin/README.md", "sha256": "f2b10979f6cf9dd56a7d861225258547f4508d22e6f5df5d2916fe69585ee18c", "checks": ["productionArt"] }] },
+    { "id": 4, "name": "Resilience and data governance", "status": "passed", "codeComplete": true, "evidenceRefs": ["docs/operations/recovery-runbook.md"], "observedChecks": ["recoveryRunbook"], "evidenceBindings": [{ "ref": "docs/operations/recovery-runbook.md", "sha256": "7899a11f6711730245091f91373a80ba62a86f8e769461058b657ef2cda57960", "checks": ["recoveryRunbook"] }] },
     { "id": 5, "name": "Assets and publication", "status": "blocked", "codeComplete": true, "evidenceRefs": ["docs/release/human-review-checklist.md", "docs/release/gate5-attestation.json"] },
     { "id": 6, "name": "Release candidate", "status": "blocked", "codeComplete": false, "evidenceRefs": ["docs/release/publication-dossier.md"] }
   ],
