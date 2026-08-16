@@ -17,11 +17,11 @@ and Chrome Web Store human review are intentionally not claimed here.
   be copied into the publisher's release record after the final production
   build. A local Supabase build is not a publication candidate.
 
-The archive is deterministic for a fixed source tree, Vite version, backend
-origin, and publishable client key. The key is intentionally passed through
-the build environment and is never committed. A Supabase `service_role` key,
-database password, mail secret, scheduler secret, private key, or reusable
-review credential is forbidden by the package checker.
+The archive records the exact generated candidate and its SHA-256. The
+publishable client key is intentionally passed through the build environment
+and is never committed. A Supabase `service_role` key, database password, mail
+secret, scheduler secret, private key, or reusable review credential is
+forbidden by the package checker.
 
 ## Single purpose and user-data disclosure
 

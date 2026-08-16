@@ -195,6 +195,7 @@ export async function validatePublicationPackage(inputPath, options = {}) {
     for (const file of javascriptFiles) {
       const source = readFileSync(file, "utf8");
       requireCondition(!/\beval\s*\(|\bnew\s+Function\s*\(/.test(source), `${relative(packageRoot, file)} uses dynamic code execution`);
+      requireCondition(!/\bimport\s*\(|\bimportScripts\s*\(/.test(source), `${relative(packageRoot, file)} loads remote or runtime code`);
       requireCondition(!source.includes("chrome.storage.sync"), `${relative(packageRoot, file)} uses Chrome Sync storage`);
       requireCondition(!/<script(?:\s[^>]*)?>[\s\S]*<\/script>/i.test(source), `${relative(packageRoot, file)} contains executable HTML`);
     }
